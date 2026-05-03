@@ -1,0 +1,19 @@
+-- Starter schema for Pet Health Tracker (edit or add new numbered files later).
+
+CREATE TABLE IF NOT EXISTS pets (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  species VARCHAR(80) NULL,
+  birthdate DATE NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS health_records (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  pet_id INT UNSIGNED NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  notes TEXT NULL,
+  record_date DATE NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_health_records_pet FOREIGN KEY (pet_id) REFERENCES pets (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
