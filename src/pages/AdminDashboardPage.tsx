@@ -182,9 +182,9 @@ interface AdminNotifRow {
 }
 
 interface ReportSummary {
-  period: string;
-  /** Present when `period === 'monthly'`: selected filter `YYYY-MM`. */
-  month?: string;
+  period: 'range';
+  startDate: string;
+  endDate: string;
   newUsers: number;
   newPets: number;
   healthRecords: number;
@@ -240,17 +240,18 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   const [appointments, setAppointments] = useState<AdminApptRow[]>([]);
   const [reminders, setReminders] = useState<AdminReminderRow[]>([]);
   const [notifications, setNotifications] = useState<AdminNotifRow[]>([]);
-  const [reportDaily, setReportDaily] = useState<ReportSummary | null>(null);
-  const [reportMonthly, setReportMonthly] = useState<ReportSummary | null>(null);
+  const [report, setReport] = useState<ReportSummary | null>(null);
   const [transactionHistory, setTransactionHistory] = useState<TransactionHistoryRow[]>([]);
   const [activityLogs, setActivityLogs] = useState<ActivityLogRow[]>([]);
-  const [reportTab, setReportTab] = useState<'daily' | 'monthly'>('daily');
-  const [reportMonthFilter, setReportMonthFilter] = useState(() => {
+  const [reportStartDate, setReportStartDate] = useState(() => {
     const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
   });
-  const reportMonthFilterRef = useRef(reportMonthFilter);
-  reportMonthFilterRef.current = reportMonthFilter;
+  const [reportEndDate, setReportEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const reportStartRef = useRef(reportStartDate);
+  const reportEndRef = useRef(reportEndDate);
+  reportStartRef.current = reportStartDate;
+  reportEndRef.current = reportEndDate;
   const [loading, setLoading] = useState(true);
 
   const [addUserOpen, setAddUserOpen] = useState(false);
@@ -279,6 +280,17 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   const [petStatus, setPetStatus] = useState('');
   const [petHealth, setPetHealth] = useState('');
 
+  const fetchReport = useCallback(async (startDate: string, endDate: string) => {
+    try {
+      const r = await apiJson<ReportSummary>(
+        `/api/admin/reports/summary?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`,
+      );
+      setReport(r);
+    } catch (e) {
+      toast.error('Could not load report', { description: String(e) });
+    }
+  }, []);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
@@ -294,8 +306,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
         a,
         r,
         n,
-        rd,
-        rm,
+        rep,
         th,
         al,
       ] = await Promise.all([
@@ -310,9 +321,8 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
         apiJson<AdminApptRow[]>('/api/admin/appointments'),
         apiJson<AdminReminderRow[]>('/api/admin/reminders'),
         apiJson<AdminNotifRow[]>('/api/admin/notifications'),
-        apiJson<ReportSummary>('/api/admin/reports/summary?period=daily'),
         apiJson<ReportSummary>(
-          `/api/admin/reports/summary?period=monthly&month=${encodeURIComponent(reportMonthFilterRef.current)}`,
+          `/api/admin/reports/summary?startDate=${encodeURIComponent(reportStartRef.current)}&endDate=${encodeURIComponent(reportEndRef.current)}`,
         ),
         apiJson<TransactionHistoryRow[]>('/api/admin/reports/transaction-history?limit=120'),
         apiJson<ActivityLogRow[]>('/api/admin/reports/activity-logs?limit=120'),
@@ -328,8 +338,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
       setAppointments(a);
       setReminders(r);
       setNotifications(n);
-      setReportDaily(rd);
-      setReportMonthly(rm);
+      setReport(rep);
       setTransactionHistory(th);
       setActivityLogs(al);
     } catch (e) {
@@ -342,17 +351,6 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   useEffect(() => {
     loadAll();
   }, [loadAll]);
-
-  const fetchMonthlyReport = useCallback(async (month: string) => {
-    try {
-      const rm = await apiJson<ReportSummary>(
-        `/api/admin/reports/summary?period=monthly&month=${encodeURIComponent(month)}`,
-      );
-      setReportMonthly(rm);
-    } catch (e) {
-      toast.error('Could not load monthly report', { description: String(e) });
-    }
-  }, []);
 
   const saveReminderRule = async (days: number) => {
     try {
@@ -586,8 +584,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
 
   const exportSummaryExcel = () => {
     if (!report) return;
-    const periodLabel =
-      report.period === 'monthly' && report.month ? `monthly (${report.month})` : report.period;
+    const periodLabel = `${report.startDate} → ${report.endDate}`;
     const html = `
       <table>
         <tr><th>Period</th><th>New Users</th><th>New Pets</th><th>Health Records</th><th>Vaccinations</th><th>Missed Vaccinations</th><th>Exercise Logs</th><th>Reminders Due</th><th>Appointments</th><th>Notifications</th><th>Audit Events</th></tr>
@@ -596,7 +593,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
     `.trim();
     downloadFile(
       html,
-      `petcare-summary-${report.period === 'monthly' && report.month ? report.month : report.period}.xls`,
+      `petcare-summary-${report.startDate}-to-${report.endDate}.xls`,
       'application/vnd.ms-excel',
     );
   };
@@ -605,7 +602,6 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
     window.print();
   };
 
-  const report = reportTab === 'daily' ? reportDaily : reportMonthly;
   const reportChartData = report
     ? [
         { name: 'Users', value: report.newUsers },
@@ -1213,43 +1209,42 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
 
         <TabsContent value="reports" className="space-y-4">
           <div className="flex flex-wrap items-end gap-3">
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant={reportTab === 'daily' ? 'default' : 'outline'}
-                className={reportTab === 'daily' ? 'bg-[#1A202C]' : ''}
-                onClick={() => setReportTab('daily')}
-              >
-                Daily
-              </Button>
-              <Button
-                type="button"
-                variant={reportTab === 'monthly' ? 'default' : 'outline'}
-                className={reportTab === 'monthly' ? 'bg-[#1A202C]' : ''}
-                onClick={() => setReportTab('monthly')}
-              >
-                Monthly
-              </Button>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="admin-report-start" className="text-xs text-[#5A6B7A]">
+                Start Date
+              </Label>
+              <Input
+                id="admin-report-start"
+                type="date"
+                value={reportStartDate}
+                className="w-auto min-w-[11rem] rounded-xl border-[#D6E3F0]"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (!v) return;
+                  setReportStartDate(v);
+                  const end = reportEndRef.current;
+                  if (end) void fetchReport(v, end);
+                }}
+              />
             </div>
-            {reportTab === 'monthly' && (
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="admin-report-month" className="text-xs text-[#5A6B7A]">
-                  Filter by month
-                </Label>
-                <Input
-                  id="admin-report-month"
-                  type="month"
-                  value={reportMonthFilter}
-                  className="w-auto min-w-[11rem] rounded-xl border-[#D6E3F0]"
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (!v) return;
-                    setReportMonthFilter(v);
-                    void fetchMonthlyReport(v);
-                  }}
-                />
-              </div>
-            )}
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="admin-report-end" className="text-xs text-[#5A6B7A]">
+                End Date
+              </Label>
+              <Input
+                id="admin-report-end"
+                type="date"
+                value={reportEndDate}
+                className="w-auto min-w-[11rem] rounded-xl border-[#D6E3F0]"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (!v) return;
+                  setReportEndDate(v);
+                  const start = reportStartRef.current;
+                  if (start) void fetchReport(start, v);
+                }}
+              />
+            </div>
             <Button type="button" variant="outline" onClick={exportSummaryExcel}>
               <Download className="w-4 h-4 mr-1" />
               Summary Excel
@@ -1277,9 +1272,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
                 <CardHeader>
                   <CardTitle className="text-base">Summary chart</CardTitle>
                   <CardDescription>
-                    {report.period === 'monthly' && report.month
-                      ? `Metrics for ${report.month} (monthly filter).`
-                      : 'Dynamic chart generated from current report metrics.'}
+                    Metrics from {report.startDate} through {report.endDate}.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="h-72">

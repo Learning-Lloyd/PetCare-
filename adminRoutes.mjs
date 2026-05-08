@@ -764,68 +764,55 @@ export function registerAdminRoutes(app, { query, getUserFromAuthHeader }) {
     try {
       const admin = await requireAdmin(req, res)
       if (!admin) return
-      const period = String(req.query.period || "daily").toLowerCase() === "monthly" ? "monthly" : "daily"
-      let rows
-      let monthKey = null
-      if (period === "daily") {
-        rows = await query(
-          `SELECT
-             (SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURDATE()) AS new_users,
-             (SELECT COUNT(*) FROM pets WHERE DATE(created_at) = CURDATE()) AS new_pets,
-             (SELECT COUNT(*) FROM health_records WHERE record_date = CURDATE()) AS health_records,
-             (SELECT COUNT(*) FROM vaccinations WHERE date_given = CURDATE()) AS vaccinations_given,
-             (SELECT COUNT(*) FROM exercise_logs WHERE log_date = CURDATE()) AS exercise_logs,
-             (SELECT COUNT(*) FROM reminders WHERE reminder_date = CURDATE()) AS reminders_due,
-             (SELECT COUNT(*) FROM appointments WHERE appt_date = CURDATE()) AS appointments,
-             (SELECT COUNT(*) FROM notifications WHERE DATE(created_at) = CURDATE()) AS notifications,
-             (SELECT COUNT(*) FROM audit_log WHERE DATE(created_at) = CURDATE()) AS audit_events`,
-        )
-      } else {
-        const raw = String(req.query.month || "").trim()
-        let y
-        let mo
-        if (/^\d{4}-\d{2}$/.test(raw)) {
-          y = Number(raw.slice(0, 4))
-          mo = Number(raw.slice(5, 7))
-          if (!(y >= 1970 && y <= 2100 && mo >= 1 && mo <= 12)) {
-            y = undefined
-          }
-        }
-        const now = new Date()
-        if (y == null) {
-          y = now.getFullYear()
-          mo = now.getMonth() + 1
-        }
-        monthKey = `${y}-${String(mo).padStart(2, "0")}`
-        const start = new Date(y, mo - 1, 1)
-        const end = new Date(y, mo, 1)
-        const fmt = (d) =>
-          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
-        const startStr = fmt(start)
-        const endStr = fmt(end)
-        const range = [startStr, endStr]
-        rows = await query(
-          `SELECT
-             (SELECT COUNT(*) FROM users WHERE created_at >= ? AND created_at < ?) AS new_users,
-             (SELECT COUNT(*) FROM pets WHERE created_at >= ? AND created_at < ?) AS new_pets,
-             (SELECT COUNT(*) FROM health_records WHERE record_date >= ? AND record_date < ?) AS health_records,
-             (SELECT COUNT(*) FROM vaccinations WHERE date_given >= ? AND date_given < ?) AS vaccinations_given,
-             (SELECT COUNT(*) FROM exercise_logs WHERE log_date >= ? AND log_date < ?) AS exercise_logs,
-             (SELECT COUNT(*) FROM reminders WHERE reminder_date >= ? AND reminder_date < ?) AS reminders_due,
-             (SELECT COUNT(*) FROM appointments WHERE appt_date >= ? AND appt_date < ?) AS appointments,
-             (SELECT COUNT(*) FROM notifications WHERE created_at >= ? AND created_at < ?) AS notifications,
-             (SELECT COUNT(*) FROM audit_log WHERE created_at >= ? AND created_at < ?) AS audit_events`,
-          [...range, ...range, ...range, ...range, ...range, ...range, ...range, ...range, ...range],
-        )
+      const rawStart = String(req.query.startDate || "").trim()
+      const rawEnd = String(req.query.endDate || "").trim()
+      const isIsoDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s)
+
+      const now = new Date()
+      const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1)
+      const defaultEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+      const fmtDate = (d) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+
+      const startDate = isIsoDate(rawStart) ? rawStart : fmtDate(defaultStart)
+      const endDate = isIsoDate(rawEnd) ? rawEnd : fmtDate(defaultEnd)
+
+      if (startDate > endDate) {
+        return res.status(400).json({ error: "startDate must be <= endDate (YYYY-MM-DD)." })
       }
+
+      // endExclusive = endDate + 1 day, to make endDate inclusive.
+      const end = new Date(`${endDate}T00:00:00`)
+      if (Number.isNaN(end.getTime())) {
+        return res.status(400).json({ error: "Invalid endDate. Expected YYYY-MM-DD." })
+      }
+      end.setDate(end.getDate() + 1)
+      const endExclusive = fmtDate(end)
+
+      const range = [startDate, endExclusive]
+      const rows = await query(
+        `SELECT
+           (SELECT COUNT(*) FROM users WHERE created_at >= ? AND created_at < ?) AS new_users,
+           (SELECT COUNT(*) FROM pets WHERE created_at >= ? AND created_at < ?) AS new_pets,
+           (SELECT COUNT(*) FROM health_records WHERE record_date >= ? AND record_date < ?) AS health_records,
+           (SELECT COUNT(*) FROM vaccinations WHERE date_given >= ? AND date_given < ?) AS vaccinations_given,
+           (SELECT COUNT(*) FROM exercise_logs WHERE log_date >= ? AND log_date < ?) AS exercise_logs,
+           (SELECT COUNT(*) FROM reminders WHERE reminder_date >= ? AND reminder_date < ?) AS reminders_due,
+           (SELECT COUNT(*) FROM appointments WHERE appt_date >= ? AND appt_date < ?) AS appointments,
+           (SELECT COUNT(*) FROM notifications WHERE created_at >= ? AND created_at < ?) AS notifications,
+           (SELECT COUNT(*) FROM audit_log WHERE created_at >= ? AND created_at < ?) AS audit_events`,
+        [...range, ...range, ...range, ...range, ...range, ...range, ...range, ...range, ...range],
+      )
       const r = rows[0] || {}
       const missed = await query(
         `SELECT COUNT(*) AS c FROM vaccinations
          WHERE status = 'Pending' AND next_due_date IS NOT NULL AND next_due_date < CURDATE()`,
       )
       res.json({
-        period,
-        ...(monthKey ? { month: monthKey } : {}),
+        period: "range",
+        startDate,
+        endDate,
         newUsers: Number(r.new_users) || 0,
         newPets: Number(r.new_pets) || 0,
         healthRecords: Number(r.health_records) || 0,
