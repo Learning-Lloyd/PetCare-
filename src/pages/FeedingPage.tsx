@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { toast } from 'sonner';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { mapFeedingRow, mapPetRow, requireUserId, throwOnError } from '@/lib/supabaseHelpers';
 import { feedingFromApi, petFromApi } from '@/lib/models';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -32,14 +33,28 @@ export default function FeedingPage({ onNavigate: _onNavigate }: FeedingPageProp
 
   const load = useCallback(async () => {
     try {
-      const [s, p] = await Promise.all([
-        apiJson<Record<string, unknown>[]>('/api/feeding-schedules'),
-        apiJson<Record<string, unknown>[]>('/api/pets'),
-      ]);
-      setSchedules(s.map(feedingFromApi));
-      const plist = p.map(petFromApi);
+      const uid = await requireUserId();
+      const { data: petsRaw, error: eP } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false });
+      throwOnError(eP);
+      const plist = (petsRaw || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>)));
       setPets(plist);
       setFPet((prev) => prev || plist[0]?.id || '');
+      const petIds = plist.map((p) => p.id);
+      if (!petIds.length) {
+        setSchedules([]);
+        return;
+      }
+      const { data: s, error: eS } = await supabase
+        .from('feeding_schedules')
+        .select('*')
+        .in('pet_id', petIds)
+        .order('pet_name', { ascending: true });
+      throwOnError(eS);
+      setSchedules((s || []).map((row) => feedingFromApi(mapFeedingRow(row as Record<string, unknown>))));
     } catch (e) {
       toast.error('Could not load feeding data', { description: String(e) });
     }
@@ -89,11 +104,14 @@ export default function FeedingPage({ onNavigate: _onNavigate }: FeedingPageProp
     if (!schedule) return;
     const next = !schedule.completed;
     try {
-      const updated = await apiJson<Record<string, unknown>>(`/api/feeding-schedules/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ completed: next }),
-      });
-      const row = feedingFromApi(updated);
+      const { data: updated, error } = await supabase
+        .from('feeding_schedules')
+        .update({ completed: next })
+        .eq('id', id)
+        .select()
+        .single();
+      throwOnError(error);
+      const row = feedingFromApi(mapFeedingRow(updated as Record<string, unknown>));
       setSchedules((prev) => prev.map((s) => (s.id === id ? row : s)));
       toast.success(next ? 'Marked complete' : 'Marked incomplete');
     } catch (e) {
@@ -123,15 +141,17 @@ export default function FeedingPage({ onNavigate: _onNavigate }: FeedingPageProp
       return;
     }
     try {
-      await apiJson('/api/feeding-schedules', {
-        method: 'POST',
-        body: JSON.stringify({
-          petId: fPet,
-          time: fTime,
-          portionSize: fPortion.trim(),
-          foodType: fFood.trim(),
-        }),
+      const pet = pets.find((p) => p.id === fPet);
+      const { error } = await supabase.from('feeding_schedules').insert({
+        pet_id: fPet,
+        pet_name: pet?.name ?? '',
+        time_of_day: fTime,
+        portion_size: fPortion.trim(),
+        food_type: fFood.trim(),
+        completed: false,
+        days_json: JSON.stringify([]),
       });
+      throwOnError(error);
       toast.success('Schedule added');
       setShowModal(false);
       setFPortion('');

@@ -2,25 +2,12 @@ import { useState, useEffect } from 'react';
 import type { ViewType, User } from '@/types';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
+import { supabase } from '@/lib/supabaseClient';
+import { fetchProfileRow, toAppUser } from '@/lib/supabaseHelpers';
+import type { AuthError } from '@supabase/supabase-js';
 
-const SESSION_KEY = 'petcare_session';
-const USER_KEY = 'petcare_user';
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem(SESSION_KEY);
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-async function readError(res: Response): Promise<string> {
-  if (res.status === 502 || res.status === 503 || res.status === 504) {
-    return "Start the API in a second terminal: npm run api (port 3001), keep it running while you use the app.";
-  }
-  try {
-    const j = await res.json();
-    return typeof j.error === "string" ? j.error : res.statusText;
-  } catch {
-    return res.statusText || "Request failed";
-  }
+function authErrorMessage(err: AuthError | null): string {
+  return err?.message || 'Authentication failed';
 }
 
 // Pages
@@ -47,6 +34,15 @@ import TopBar from '@/components/TopBar';
 import VetSidebar from '@/components/VetSidebar';
 import VetTopBar from '@/components/VetTopBar';
 
+async function loadSessionUser(): Promise<User | null> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session?.user) return null;
+  const profile = await fetchProfileRow(session.user.id).catch(() => null);
+  return toAppUser(session.user, profile);
+}
+
 function App() {
   const [currentView, setCurrentView] = useState<ViewType>('login');
   const [user, setUser] = useState<User | null>(null);
@@ -54,85 +50,99 @@ function App() {
   const [vetSearch, setVetSearch] = useState('');
 
   useEffect(() => {
-    const token = localStorage.getItem(SESSION_KEY);
-    if (!token) return;
-
+    let cancelled = false;
     (async () => {
-      try {
-        const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
-        if (!res.ok) {
-          localStorage.removeItem(SESSION_KEY);
-          localStorage.removeItem(USER_KEY);
-          return;
-        }
-        const { user: u } = await res.json();
-        const parsed = u as User;
-        setUser(parsed);
-        setCurrentView(parsed.isVet ? 'vet-dashboard' : 'dashboard');
-      } catch {
-        localStorage.removeItem(SESSION_KEY);
-        localStorage.removeItem(USER_KEY);
+      const u = await loadSessionUser();
+      if (cancelled) return;
+      if (u) {
+        setUser(u);
+        setCurrentView(u.isVet ? 'vet-dashboard' : 'dashboard');
       }
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!session?.user) {
+        setUser(null);
+        setCurrentView('login');
+        return;
+      }
+      const profile = await fetchProfileRow(session.user.id).catch(() => null);
+      const u = toAppUser(session.user, profile);
+      setUser(u);
+      setCurrentView(u.isVet ? 'vet-dashboard' : 'dashboard');
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
   const handleLogin = async (email: string, password: string) => {
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!res.ok) {
-        toast.error('Invalid credentials', { description: await readError(res) });
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        toast.error('Invalid credentials', { description: authErrorMessage(error) });
         return;
       }
-      const { user: u, sessionToken } = await res.json();
-      localStorage.setItem(SESSION_KEY, sessionToken);
-      localStorage.setItem(USER_KEY, JSON.stringify(u));
-      setUser(u as User);
+      if (!data.user) return;
+      const profile = await fetchProfileRow(data.user.id).catch(() => null);
+      const u = toAppUser(data.user, profile);
+      if (!u.isActive) {
+        await supabase.auth.signOut();
+        toast.error('Account deactivated', {
+          description: 'This account has been deactivated. Contact an administrator.',
+        });
+        return;
+      }
+      setUser(u);
       setCurrentView(u.isVet ? 'vet-dashboard' : 'dashboard');
       toast.success('Welcome back!', { description: `Hello, ${u.name}` });
-    } catch {
-      toast.error("Could not reach server", {
-        description: "Run npm run api in another terminal (same app folder), then try again.",
-      });
+    } catch (e) {
+      toast.error('Sign-in failed', { description: String(e) });
     }
   };
 
   const handleRegister = async (name: string, email: string, password: string) => {
     try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password }),
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: name },
+        },
       });
-      if (!res.ok) {
-        toast.error('Registration failed', { description: await readError(res) });
+      if (error) {
+        toast.error('Registration failed', { description: authErrorMessage(error) });
         return;
       }
-      const { user: u, sessionToken } = await res.json();
-      localStorage.setItem(SESSION_KEY, sessionToken);
-      localStorage.setItem(USER_KEY, JSON.stringify(u));
-      setUser(u as User);
+      if (!data.user) return;
+      if (!data.session) {
+        toast.success('Check your email', {
+          description: 'Confirm your address to finish signing up, then sign in.',
+        });
+        return;
+      }
+      const profile = await fetchProfileRow(data.user.id).catch(() => null);
+      const u = toAppUser(data.user, profile);
+      setUser(u);
       setCurrentView('dashboard');
       toast.success('Account created!', { description: `Welcome, ${name}` });
-    } catch {
-      toast.error("Could not reach server", {
-        description: "Run npm run api in another terminal (same app folder), then try again.",
-      });
+    } catch (e) {
+      toast.error('Registration failed', { description: String(e) });
     }
   };
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST', headers: { ...authHeaders() } });
+      await supabase.auth.signOut();
     } catch {
       /* ignore */
     }
     setUser(null);
-    localStorage.removeItem(SESSION_KEY);
-    localStorage.removeItem(USER_KEY);
     setCurrentView('login');
     toast.info('Logged out successfully');
   };
@@ -150,26 +160,22 @@ function App() {
     }
   }, [user, currentView]);
 
-  /** Vet shell mounts when `user.isVet` is true; confirm with `/api/auth/me` so UI matches DB (avoids 403 loops). */
+  /** Refresh profile from DB so vet/admin flags match Supabase. */
   useEffect(() => {
     if (!user?.isVet) return;
-    const token = localStorage.getItem(SESSION_KEY);
-    if (!token) return;
     let cancelled = false;
     (async () => {
-      try {
-        const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
-        if (!res.ok || cancelled) return;
-        const data = (await res.json()) as { user: User };
-        const fresh = data.user;
-        if (cancelled) return;
-        if (!fresh.isVet) {
-          setUser(fresh);
-          setCurrentView('dashboard');
-          toast.info('This account is not a veterinarian. Showing the standard dashboard.');
-        }
-      } catch {
-        /* ignore */
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.user || cancelled) return;
+      const profile = await fetchProfileRow(session.user.id).catch(() => null);
+      if (cancelled) return;
+      const fresh = toAppUser(session.user, profile);
+      if (!fresh.isVet) {
+        setUser(fresh);
+        setCurrentView('dashboard');
+        toast.info('This account is not a veterinarian. Showing the standard dashboard.');
       }
     })();
     return () => {
@@ -197,7 +203,6 @@ function App() {
     }
   };
 
-  // Render the appropriate page based on current view
   const renderPage = () => {
     switch (currentView) {
       case 'login':
@@ -240,7 +245,6 @@ function App() {
     }
   };
 
-  // If not logged in, show auth pages
   if (!user) {
     return (
       <div className="min-h-screen bg-[#F6F8FC]">
@@ -278,31 +282,25 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[#F6F8FC] flex">
-      {/* Sidebar */}
-      <Sidebar 
-        currentView={currentView} 
-        onNavigate={navigateTo} 
+      <Sidebar
+        currentView={currentView}
+        onNavigate={navigateTo}
         isOpen={isSidebarOpen}
         onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
         isAdmin={user.isAdmin === true}
       />
-      
-      {/* Main Content */}
+
       <div className={`flex-1 flex flex-col transition-all duration-300 ${isSidebarOpen ? 'ml-64' : 'ml-20'}`}>
-        {/* Top Bar */}
-        <TopBar 
-          user={user} 
-          onLogout={handleLogout} 
+        <TopBar
+          user={user}
+          onLogout={handleLogout}
           onNavigate={navigateTo}
           onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
         />
-        
-        {/* Page Content */}
-        <main className="flex-1 p-6 overflow-auto">
-          {renderPage()}
-        </main>
+
+        <main className="flex-1 p-6 overflow-auto">{renderPage()}</main>
       </div>
-      
+
       <Toaster position="top-right" richColors />
     </div>
   );

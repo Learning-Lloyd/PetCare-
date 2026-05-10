@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ViewType, Pet } from '@/types';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { computeAvailableSlotsForVet, mapPetRow, ownerBookAppointment, requireUserId, throwOnError } from '@/lib/supabaseHelpers';
 import { petFromApi } from '@/lib/models';
 import { Calendar, Clock, Shield, RefreshCw, FileText, Stethoscope } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -40,15 +41,32 @@ export default function AddAppointmentPage({ onNavigate }: AddAppointmentPagePro
   useEffect(() => {
     (async () => {
       try {
-        const [rawPets, rawVets] = await Promise.all([
-          apiJson<Record<string, unknown>[]>('/api/pets'),
-          apiJson<VetListItem[]>('/api/vets'),
-        ]);
-        const list = rawPets.map(petFromApi);
+        const uid = await requireUserId();
+        const { data: rawPets, error: eP } = await supabase
+          .from('pets')
+          .select('*')
+          .eq('user_id', uid)
+          .order('created_at', { ascending: false });
+        throwOnError(eP);
+        const list = (rawPets || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>)));
         setPets(list);
         if (list.length) setSelectedPet(list[0].id);
-        setVets(Array.isArray(rawVets) ? rawVets : []);
-        if (rawVets?.length) setSelectedVet(rawVets[0].id);
+        const { data: rawVets, error: eV } = await supabase
+          .from('users')
+          .select('id,name,email,vet_license_id,is_active')
+          .eq('is_vet', true)
+          .order('name', { ascending: true });
+        throwOnError(eV);
+        const vetList: VetListItem[] = (rawVets || [])
+          .filter((v) => v.is_active !== false)
+          .map((v) => ({
+          id: String(v.id),
+          name: String(v.name ?? ''),
+          email: String(v.email ?? ''),
+          vetLicenseId: v.vet_license_id ? String(v.vet_license_id) : undefined,
+        }));
+        setVets(vetList);
+        if (vetList.length) setSelectedVet(vetList[0].id);
       } catch {
         toast.error('Could not load pets or veterinarians');
       }
@@ -65,11 +83,9 @@ export default function AddAppointmentPage({ onNavigate }: AddAppointmentPagePro
     (async () => {
       setLoadingSlots(true);
       try {
-        const res = await apiJson<{ slots: string[] }>(
-          `/api/vets/${encodeURIComponent(selectedVet)}/slots?date=${encodeURIComponent(date)}`,
-        );
+        const slots = await computeAvailableSlotsForVet(selectedVet, date);
         if (!cancelled) {
-          setSlots(Array.isArray(res.slots) ? res.slots : []);
+          setSlots(slots);
           setSelectedTime('');
         }
       } catch {
@@ -138,16 +154,17 @@ export default function AddAppointmentPage({ onNavigate }: AddAppointmentPagePro
     }
     setIsSubmitting(true);
     try {
-      await apiJson('/api/appointments', {
-        method: 'POST',
-        body: JSON.stringify({
-          petId: selectedPet,
-          vetId: selectedVet,
-          reason,
-          date,
-          time: selectedTime,
-          notes: notes.trim() || undefined,
-        }),
+      const uid = await requireUserId();
+      const pet = pets.find((p) => p.id === selectedPet);
+      await ownerBookAppointment({
+        ownerId: uid,
+        petId: selectedPet,
+        vetId: selectedVet,
+        petName: pet?.name ?? '',
+        reason,
+        date,
+        time: selectedTime,
+        notes: notes.trim() || undefined,
       });
       toast.success('Booking request sent', {
         description: 'Your vet will confirm or suggest another time. Check Schedule for status.',

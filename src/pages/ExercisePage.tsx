@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { toast } from 'sonner';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { mapExerciseRow, mapPetRow, requireUserId, throwOnError } from '@/lib/supabaseHelpers';
 import { exerciseFromApi, petFromApi } from '@/lib/models';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -34,14 +35,28 @@ export default function ExercisePage({ onNavigate: _onNavigate }: ExercisePagePr
 
   const load = useCallback(async () => {
     try {
-      const [ex, p] = await Promise.all([
-        apiJson<Record<string, unknown>[]>('/api/exercises'),
-        apiJson<Record<string, unknown>[]>('/api/pets'),
-      ]);
-      setExercises(ex.map(exerciseFromApi));
-      const plist = p.map(petFromApi);
+      const uid = await requireUserId();
+      const { data: petsRaw, error: eP } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false });
+      throwOnError(eP);
+      const plist = (petsRaw || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>)));
       setPets(plist);
       setEPet((prev) => prev || plist[0]?.id || '');
+      const petIds = plist.map((p) => p.id);
+      if (!petIds.length) {
+        setExercises([]);
+        return;
+      }
+      const { data: ex, error: eE } = await supabase
+        .from('exercise_logs')
+        .select('*')
+        .in('pet_id', petIds)
+        .order('log_date', { ascending: false });
+      throwOnError(eE);
+      setExercises((ex || []).map((row) => exerciseFromApi(mapExerciseRow(row as Record<string, unknown>))));
     } catch (e) {
       toast.error('Could not load exercises', { description: String(e) });
     }
@@ -125,17 +140,17 @@ export default function ExercisePage({ onNavigate: _onNavigate }: ExercisePagePr
       return;
     }
     try {
-      await apiJson('/api/exercises', {
-        method: 'POST',
-        body: JSON.stringify({
-          petId: ePet,
-          type: eType,
-          duration,
-          caloriesBurned: eCal ? Number(eCal) : undefined,
-          date: eDate,
-          notes: eNotes || undefined,
-        }),
+      const pet = pets.find((p) => p.id === ePet);
+      const { error } = await supabase.from('exercise_logs').insert({
+        pet_id: ePet,
+        pet_name: pet?.name ?? '',
+        exercise_type: eType,
+        duration_minutes: duration,
+        calories_burned: eCal ? Number(eCal) : null,
+        log_date: eDate,
+        notes: eNotes.trim() || null,
       });
+      throwOnError(error);
       toast.success('Activity logged');
       setShowModal(false);
       setENotes('');

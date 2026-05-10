@@ -18,7 +18,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { toast } from 'sonner';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { mapPetRow, requireUserId, throwOnError } from '@/lib/supabaseHelpers';
 import { petFromApi } from '@/lib/models';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -59,8 +60,14 @@ export default function PetsPage({ onNavigate }: PetsPageProps) {
 
   const loadPets = useCallback(async () => {
     try {
-      const raw = await apiJson<Record<string, unknown>[]>('/api/pets');
-      setPets(raw.map(petFromApi));
+      const uid = await requireUserId();
+      const { data, error } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false });
+      throwOnError(error);
+      setPets((data || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>))));
     } catch (e) {
       toast.error('Could not load pets', { description: String(e) });
       setPets([]);
@@ -129,8 +136,23 @@ export default function PetsPage({ onNavigate }: PetsPageProps) {
     setOwnerVetNotes([]);
     setNotesLoading(true);
     try {
-      const rows = await apiJson<OwnerVetHealthNote[]>(`/api/pets/${petId}/vet-health-notes`);
-      setOwnerVetNotes(Array.isArray(rows) ? rows : []);
+      const { data: notes, error: e1 } = await supabase
+        .from('vet_health_notes')
+        .select('*')
+        .eq('pet_id', petId)
+        .order('created_at', { ascending: false });
+      throwOnError(e1);
+      const vetIds = [...new Set((notes || []).map((n) => String(n.vet_user_id)))];
+      const { data: vets } = await supabase.from('users').select('id,name').in('id', vetIds);
+      const names = Object.fromEntries((vets || []).map((v) => [String(v.id), String(v.name ?? '')]));
+      const rows: OwnerVetHealthNote[] = (notes || []).map((n) => ({
+        id: String(n.id),
+        vetName: names[String(n.vet_user_id)] || 'Vet',
+        noteKind: String(n.note_kind),
+        body: String(n.body),
+        createdAt: String(n.created_at),
+      }));
+      setOwnerVetNotes(rows);
     } catch (e) {
       toast.error('Could not load vet notes', { description: String(e) });
       setNotesPetId(null);
@@ -146,8 +168,24 @@ export default function PetsPage({ onNavigate }: PetsPageProps) {
     setShareAllowNotes(true);
     setExistingShares([]);
     try {
-      const rows = await apiJson<VetShareInfo[]>(`/api/pets/${petId}/vet-shares`);
-      setExistingShares(Array.isArray(rows) ? rows : []);
+      const { data: shares, error: e1 } = await supabase
+        .from('pet_vet_shares')
+        .select('*')
+        .eq('pet_id', petId);
+      throwOnError(e1);
+      const vetIds = (shares || []).map((s) => String(s.vet_user_id));
+      const { data: vetUsers, error: e2 } = await supabase.from('users').select('id,email,name').in('id', vetIds);
+      throwOnError(e2);
+      const byId = Object.fromEntries((vetUsers || []).map((u) => [String(u.id), u]));
+      const rows: VetShareInfo[] = (shares || []).map((s) => {
+        const u = byId[String(s.vet_user_id)] as { email?: string; name?: string } | undefined;
+        return {
+          vetEmail: u ? String(u.email ?? '') : '',
+          vetName: u ? String(u.name ?? '') : '',
+          allowMedicalNotes: Boolean(s.allow_medical_notes),
+        };
+      });
+      setExistingShares(rows);
     } catch {
       setExistingShares([]);
     }
@@ -159,16 +197,46 @@ export default function PetsPage({ onNavigate }: PetsPageProps) {
       return;
     }
     try {
-      await apiJson(`/api/pets/${sharePetId}/vet-shares`, {
-        method: 'POST',
-        body: JSON.stringify({
-          vetEmail: shareVetEmail.trim().toLowerCase(),
-          allowMedicalNotes: shareAllowNotes,
-        }),
-      });
+      const ownerId = await requireUserId();
+      const email = shareVetEmail.trim().toLowerCase();
+      const { data: vet, error: ev } = await supabase
+        .from('users')
+        .select('id,is_vet,is_active')
+        .eq('email', email)
+        .maybeSingle();
+      throwOnError(ev);
+      if (!vet?.id || !vet.is_vet) {
+        toast.error('No veterinarian found with that email.');
+        return;
+      }
+      if (vet.is_active === false) {
+        toast.error('That veterinarian account is inactive.');
+        return;
+      }
+      const { error: ei } = await supabase.from('pet_vet_shares').upsert(
+        {
+          pet_id: sharePetId,
+          owner_user_id: ownerId,
+          vet_user_id: String(vet.id),
+          allow_medical_notes: shareAllowNotes,
+        },
+        { onConflict: 'pet_id,vet_user_id' },
+      );
+      throwOnError(ei);
       toast.success('Vet access updated');
-      const rows = await apiJson<VetShareInfo[]>(`/api/pets/${sharePetId}/vet-shares`);
-      setExistingShares(Array.isArray(rows) ? rows : []);
+      const { data: shares } = await supabase.from('pet_vet_shares').select('*').eq('pet_id', sharePetId);
+      const vetIds = (shares || []).map((s) => String(s.vet_user_id));
+      const { data: vetUsers } = await supabase.from('users').select('id,email,name').in('id', vetIds);
+      const byId = Object.fromEntries((vetUsers || []).map((u) => [String(u.id), u]));
+      const rows: VetShareInfo[] = (shares || []).map((s) => {
+        const u = byId[String(s.vet_user_id)] as { email?: string; name?: string } | undefined;
+        return {
+          vetEmail: u ? String(u.email ?? '') : '',
+          vetName: u ? String(u.name ?? '') : '',
+          allowMedicalNotes: Boolean(s.allow_medical_notes),
+        };
+      });
+      setExistingShares(rows);
       setShareVetEmail('');
     } catch (e) {
       toast.error('Could not share', { description: String(e) });
@@ -178,7 +246,8 @@ export default function PetsPage({ onNavigate }: PetsPageProps) {
   const handleDeletePet = async (petId: string, petName: string) => {
     if (!confirm(`Are you sure you want to delete ${petName}?`)) return;
     try {
-      await apiJson(`/api/pets/${petId}`, { method: 'DELETE' });
+      const { error } = await supabase.from('pets').delete().eq('id', petId);
+      throwOnError(error);
       setPets((prev) => prev.filter((p) => p.id !== petId));
       toast.success(`${petName} has been removed`);
     } catch (e) {

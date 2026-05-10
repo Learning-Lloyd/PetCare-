@@ -9,7 +9,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useEffect, useState } from 'react';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { mapNotificationRow, throwOnError } from '@/lib/supabaseHelpers';
 import { notificationFromApi } from '@/lib/models';
 
 interface TopBarProps {
@@ -26,8 +27,18 @@ export default function TopBar({ user, onLogout, onNavigate, onToggleSidebar }: 
     let cancelled = false;
     (async () => {
       try {
-        const raw = await apiJson<Record<string, unknown>[]>('/api/notifications');
-        if (!cancelled) setNotifications(raw.map(notificationFromApi));
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user || cancelled) return;
+        const { data, error } = await supabase
+          .from('notifications')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        throwOnError(error);
+        if (!cancelled) setNotifications((data || []).map((row) => notificationFromApi(mapNotificationRow(row as Record<string, unknown>))));
       } catch {
         if (!cancelled) setNotifications([]);
       }

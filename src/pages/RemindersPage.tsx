@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { toast } from 'sonner';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { mapPetRow, mapReminderRow, requireUserId, throwOnError } from '@/lib/supabaseHelpers';
 import { petFromApi, reminderFromApi } from '@/lib/models';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -32,12 +33,15 @@ export default function RemindersPage({ onNavigate: _onNavigate }: RemindersPage
 
   const load = useCallback(async () => {
     try {
-      const [r, p] = await Promise.all([
-        apiJson<Record<string, unknown>[]>('/api/reminders'),
-        apiJson<Record<string, unknown>[]>('/api/pets'),
+      const uid = await requireUserId();
+      const [rRes, pRes] = await Promise.all([
+        supabase.from('reminders').select('*').eq('user_id', uid).order('reminder_date', { ascending: true }),
+        supabase.from('pets').select('*').eq('user_id', uid).order('created_at', { ascending: false }),
       ]);
-      setReminders(r.map(reminderFromApi));
-      setPets(p.map(petFromApi));
+      throwOnError(rRes.error);
+      throwOnError(pRes.error);
+      setReminders((rRes.data || []).map((row) => reminderFromApi(mapReminderRow(row as Record<string, unknown>))));
+      setPets((pRes.data || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>))));
     } catch (e) {
       toast.error('Could not load reminders', { description: String(e) });
     }
@@ -87,11 +91,14 @@ export default function RemindersPage({ onNavigate: _onNavigate }: RemindersPage
     if (!reminder) return;
     const next = !reminder.completed;
     try {
-      const updated = await apiJson<Record<string, unknown>>(`/api/reminders/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ completed: next }),
-      });
-      const row = reminderFromApi(updated);
+      const { data: updated, error } = await supabase
+        .from('reminders')
+        .update({ completed: next })
+        .eq('id', id)
+        .select()
+        .single();
+      throwOnError(error);
+      const row = reminderFromApi(mapReminderRow(updated as Record<string, unknown>));
       setReminders((prev) => prev.map((r) => (r.id === id ? row : r)));
       toast.success(next ? 'Marked complete' : 'Reopened');
     } catch (e) {
@@ -142,18 +149,25 @@ export default function RemindersPage({ onNavigate: _onNavigate }: RemindersPage
       return;
     }
     try {
-      await apiJson('/api/reminders', {
-        method: 'POST',
-        body: JSON.stringify({
-          title: rTitle.trim(),
-          date: rDate,
-          time: rTime || null,
-          type: rType,
-          priority: rPriority,
-          petId: rPet || null,
-          description: rDesc || null,
-        }),
+      const uid = await requireUserId();
+      let petName: string | null = null;
+      if (rPet) {
+        const pet = pets.find((p) => p.id === rPet);
+        petName = pet?.name ?? null;
+      }
+      const { error } = await supabase.from('reminders').insert({
+        user_id: uid,
+        pet_id: rPet || null,
+        pet_name: petName,
+        reminder_type: rType,
+        title: rTitle.trim(),
+        reminder_date: rDate,
+        reminder_time: rTime || null,
+        priority: rPriority,
+        completed: false,
+        description: rDesc.trim() || null,
       });
+      throwOnError(error);
       toast.success('Reminder added');
       setShowModal(false);
       setRTitle('');

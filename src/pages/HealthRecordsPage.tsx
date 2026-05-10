@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ViewType, HealthRecord } from '@/types';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { mapHealthRecordRow, mapPetRow, requireUserId, throwOnError } from '@/lib/supabaseHelpers';
 import { healthRecordFromApi, petFromApi } from '@/lib/models';
 import { healthScoreFromPets } from '@/lib/stats';
 import { toast } from 'sonner';
@@ -43,12 +44,25 @@ export default function HealthRecordsPage({ onNavigate }: HealthRecordsPageProps
 
   const load = useCallback(async () => {
     try {
-      const [rawRec, rawPets] = await Promise.all([
-        apiJson<Record<string, unknown>[]>('/api/health-records'),
-        apiJson<Record<string, unknown>[]>('/api/pets'),
-      ]);
-      const rec = rawRec.map(healthRecordFromApi);
-      const pets = rawPets.map(petFromApi);
+      const uid = await requireUserId();
+      const { data: rawPets, error: eP } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false });
+      throwOnError(eP);
+      const pets = (rawPets || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>)));
+      const petIds = pets.map((p) => p.id);
+      let rec: HealthRecord[] = [];
+      if (petIds.length) {
+        const { data: rawRec, error: eR } = await supabase
+          .from('health_records')
+          .select('*')
+          .in('pet_id', petIds)
+          .order('record_date', { ascending: false });
+        throwOnError(eR);
+        rec = (rawRec || []).map((row) => healthRecordFromApi(mapHealthRecordRow(row as Record<string, unknown>)));
+      }
       setRecords(rec);
       setHealthScore(healthScoreFromPets(pets));
     } catch (e) {

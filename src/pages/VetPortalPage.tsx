@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ViewType } from '@/types';
 import { toast } from 'sonner';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import {
+  computeVetSlotsForDate,
+  fetchVetAppointments,
+  fetchVetBookingSettings,
+  fetchVetHealthRecords,
+  fetchVetNotesForPet,
+  fetchVetOverview,
+  fetchVetPetVaccinations,
+  fetchVetPets,
+  fetchVetUpcomingVaccinations,
+  patchVetAppointment,
+  patchVetVaccination,
+  postVetNote,
+  saveVetBookingSettings,
+} from '@/lib/vetSupabase';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -163,14 +178,21 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
   const [outcomeNotes, setOutcomeNotes] = useState('');
 
   const loadPets = useCallback(async () => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
     const q = searchQuery.trim();
-    const path = q ? `/api/vet/pets?q=${encodeURIComponent(q)}` : '/api/vet/pets';
-    const raw = await apiJson<VetPetCard[]>(path);
-    setPets(Array.isArray(raw) ? raw : []);
+    const raw = await fetchVetPets(user.id, q);
+    setPets(raw);
   }, [searchQuery]);
 
   const refreshOverview = useCallback(async () => {
-    const o = await apiJson<Overview>('/api/vet/overview');
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+    const o = await fetchVetOverview(user.id);
     setOverview(o);
   }, []);
 
@@ -179,8 +201,12 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
     (async () => {
       setLoading(true);
       try {
+        const {
+          data: { user: vetUser },
+        } = await supabase.auth.getUser();
+        if (!vetUser) return;
         if (currentView === 'vet-dashboard') {
-          const o = await apiJson<Overview>('/api/vet/overview');
+          const o = await fetchVetOverview(vetUser.id);
           if (!cancelled) setOverview(o);
         }
         if (
@@ -191,38 +217,37 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
           await loadPets();
         }
         if (currentView === 'vet-records' && focusPetId) {
-          const qs =
-            recordFrom && recordTo
-              ? `?from=${encodeURIComponent(recordFrom)}&to=${encodeURIComponent(recordTo)}`
-              : '';
-          const r = await apiJson<HealthRec[]>(`/api/vet/pets/${focusPetId}/health-records${qs}`);
-          if (!cancelled) setRecords(Array.isArray(r) ? r : []);
+          const r = await fetchVetHealthRecords(
+            vetUser.id,
+            focusPetId,
+            recordFrom || undefined,
+            recordTo || undefined,
+          );
+          if (!cancelled) setRecords(r);
         }
         if (currentView === 'vet-vaccinations') {
-          const u = await apiJson<VaxRow[]>('/api/vet/vaccinations/upcoming');
-          if (!cancelled) setUpcomingVax(Array.isArray(u) ? u : []);
+          const u = await fetchVetUpcomingVaccinations(vetUser.id);
+          if (!cancelled) setUpcomingVax(u);
           if (focusPetId) {
-            const v = await apiJson<VaxRow[]>(`/api/vet/pets/${focusPetId}/vaccinations`);
-            if (!cancelled) setVaxList(Array.isArray(v) ? v : []);
+            const v = await fetchVetPetVaccinations(vetUser.id, focusPetId);
+            if (!cancelled) setVaxList(v);
           } else {
             if (!cancelled) setVaxList([]);
           }
         }
         if (currentView === 'vet-notes' && focusPetId) {
-          const n = await apiJson<VetNoteRow[]>(`/api/vet/pets/${focusPetId}/notes`);
-          if (!cancelled) setNotes(Array.isArray(n) ? n : []);
+          const n = await fetchVetNotesForPet(vetUser.id, focusPetId);
+          if (!cancelled) setNotes(n);
         } else if (currentView === 'vet-notes') {
           if (!cancelled) setNotes([]);
         }
         if (currentView === 'vet-appointments') {
           const [a, bs] = await Promise.all([
-            apiJson<ApptRow[]>('/api/vet/appointments'),
-            apiJson<{ dayStart: string; dayEnd: string; slotMinutes: number }>('/api/vet/booking-settings').catch(
-              () => null,
-            ),
+            fetchVetAppointments(vetUser.id),
+            fetchVetBookingSettings(vetUser.id).catch(() => null),
           ]);
           if (!cancelled) {
-            setAppts(Array.isArray(a) ? a : []);
+            setAppts(a);
             if (bs) {
               setHoursDraft({
                 dayStart: bs.dayStart,
@@ -263,8 +288,12 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
   );
 
   const reloadAppts = useCallback(async () => {
-    const a = await apiJson<ApptRow[]>('/api/vet/appointments');
-    setAppts(Array.isArray(a) ? a : []);
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+    const a = await fetchVetAppointments(user.id);
+    setAppts(a);
   }, []);
 
   const afterApptChange = useCallback(
@@ -279,11 +308,12 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
   const loadResSlotsFor = useCallback(async (d: string) => {
     setResLoading(true);
     try {
-      const me = await apiJson<{ user: { id: string } }>('/api/auth/me');
-      const r = await apiJson<{ slots: string[] }>(
-        `/api/vets/${encodeURIComponent(me.user.id)}/slots?date=${encodeURIComponent(d)}`,
-      );
-      setResSlots(Array.isArray(r.slots) ? r.slots : []);
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      const slots = await computeVetSlotsForDate(user.id, d);
+      setResSlots(slots);
     } catch (e) {
       if (!isVetAccessDenied(e)) toast.error('Could not load slots', { description: String(e) });
       setResSlots([]);
@@ -300,16 +330,13 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
     void loadResSlotsFor(d);
   };
 
-  const patchAppt = async (id: string, body: Record<string, unknown>) => {
-    await apiJson(`/api/vet/appointments/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(body),
-    });
-  };
-
   const handleAcceptAppt = async (id: string) => {
     try {
-      await patchAppt(id, { action: 'accept' });
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      await patchVetAppointment(user.id, user.email || '', id, { action: 'accept' });
       await afterApptChange('Booking accepted');
     } catch (e) {
       if (!isVetAccessDenied(e)) toast.error('Could not accept', { description: String(e) });
@@ -318,7 +345,11 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
 
   const handleRejectAppt = async (id: string) => {
     try {
-      await patchAppt(id, { action: 'reject' });
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      await patchVetAppointment(user.id, user.email || '', id, { action: 'reject' });
       await afterApptChange('Request declined');
     } catch (e) {
       if (!isVetAccessDenied(e)) toast.error('Could not reject', { description: String(e) });
@@ -331,7 +362,15 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
       return;
     }
     try {
-      await patchAppt(resOpen.id, { action: 'reschedule', proposedDate: resDate, proposedTime: resTime });
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      await patchVetAppointment(user.id, user.email || '', resOpen.id, {
+        action: 'reschedule',
+        proposedDate: resDate,
+        proposedTime: resTime,
+      });
       setResOpen(null);
       await afterApptChange('New time sent to owner');
     } catch (e) {
@@ -344,7 +383,11 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
     const action = outcomeOpen.kind === 'complete' ? 'complete' : 'missed';
     const notes = outcomeNotes.trim() || undefined;
     try {
-      await patchAppt(outcomeOpen.row.id, { action, vetNotes: notes });
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      await patchVetAppointment(user.id, user.email || '', outcomeOpen.row.id, { action, vetNotes: notes });
       setOutcomeOpen(null);
       setOutcomeNotes('');
       await afterApptChange(outcomeOpen.kind === 'complete' ? 'Marked complete' : 'Marked missed');
@@ -355,10 +398,11 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
 
   const saveBookingHours = async () => {
     try {
-      await apiJson('/api/vet/booking-settings', {
-        method: 'PATCH',
-        body: JSON.stringify(hoursDraft),
-      });
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      await saveVetBookingSettings(user.id, hoursDraft);
       toast.success('Booking hours saved');
     } catch (e) {
       if (!isVetAccessDenied(e)) toast.error('Save failed', { description: String(e) });
@@ -381,14 +425,15 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
       return;
     }
     try {
-      await apiJson(`/api/vet/pets/${focusPetId}/notes`, {
-        method: 'POST',
-        body: JSON.stringify({ noteKind, body: noteBody.trim() }),
-      });
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      await postVetNote(user.id, focusPetId, noteKind, noteBody.trim());
       toast.success('Note saved');
       setNoteBody('');
-      const n = await apiJson<VetNoteRow[]>(`/api/vet/pets/${focusPetId}/notes`);
-      setNotes(Array.isArray(n) ? n : []);
+      const n = await fetchVetNotesForPet(user.id, focusPetId);
+      setNotes(n);
     } catch (e) {
       if (!isVetAccessDenied(e)) toast.error('Could not save note', { description: String(e) });
     }
@@ -396,22 +441,24 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
 
   const patchVax = async (id: string, status: 'Done' | 'Pending') => {
     try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      const profile = user.user_metadata?.full_name || user.user_metadata?.name || user.email || 'Vet';
       const remarks = vaxRemarks[id]?.trim();
-      await apiJson(`/api/vet/vaccinations/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          status,
-          remarks: remarks || undefined,
-          notesAppend: true,
-        }),
+      await patchVetVaccination(user.id, String(profile), id, {
+        status,
+        remarks: remarks || undefined,
+        notesAppend: true,
       });
       toast.success(status === 'Done' ? 'Marked as completed' : 'Updated');
       setVaxRemarks((prev) => ({ ...prev, [id]: '' }));
-      const u = await apiJson<VaxRow[]>('/api/vet/vaccinations/upcoming');
-      setUpcomingVax(Array.isArray(u) ? u : []);
+      const u = await fetchVetUpcomingVaccinations(user.id);
+      setUpcomingVax(u);
       if (focusPetId) {
-        const v = await apiJson<VaxRow[]>(`/api/vet/pets/${focusPetId}/vaccinations`);
-        setVaxList(Array.isArray(v) ? v : []);
+        const v = await fetchVetPetVaccinations(user.id, focusPetId);
+        setVaxList(v);
       }
       await refreshOverview();
     } catch (e) {
@@ -595,12 +642,17 @@ export default function VetPortalPage({ currentView, onNavigate, searchQuery }: 
               onClick={async () => {
                 if (!focusPetId) return;
                 try {
-                  const qs =
-                    recordFrom && recordTo
-                      ? `?from=${encodeURIComponent(recordFrom)}&to=${encodeURIComponent(recordTo)}`
-                      : '';
-                  const r = await apiJson<HealthRec[]>(`/api/vet/pets/${focusPetId}/health-records${qs}`);
-                  setRecords(Array.isArray(r) ? r : []);
+                  const {
+                    data: { user },
+                  } = await supabase.auth.getUser();
+                  if (!user) return;
+                  const r = await fetchVetHealthRecords(
+                    user.id,
+                    focusPetId,
+                    recordFrom || undefined,
+                    recordTo || undefined,
+                  );
+                  setRecords(r);
                 } catch (e) {
                   if (!isVetAccessDenied(e)) toast.error(String(e));
                 }

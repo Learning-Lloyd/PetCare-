@@ -9,7 +9,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { useEffect, useState } from 'react';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { fetchVetAlerts } from '@/lib/vetSupabase';
 
 interface VetNotif {
   id: string;
@@ -32,8 +33,12 @@ export default function VetTopBar({ user, onToggleSidebar, searchQuery, onSearch
     let cancelled = false;
     (async () => {
       try {
-        const raw = await apiJson<VetNotif[]>('/api/vet/notifications');
-        if (!cancelled) setVetAlerts(Array.isArray(raw) ? raw : []);
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user || cancelled) return;
+        const raw = await fetchVetAlerts(user.id);
+        if (!cancelled) setVetAlerts(raw);
       } catch {
         if (!cancelled) setVetAlerts([]);
       }

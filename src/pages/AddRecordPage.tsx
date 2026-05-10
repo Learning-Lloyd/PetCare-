@@ -7,7 +7,8 @@ import { Label } from '@/components/ui/label';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { toast } from 'sonner';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { mapPetRow, requireUserId, throwOnError, uploadDataUrlToStorage } from '@/lib/supabaseHelpers';
 import { petFromApi } from '@/lib/models';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -49,8 +50,14 @@ export default function AddRecordPage({ onNavigate }: AddRecordPageProps) {
   useEffect(() => {
     (async () => {
       try {
-        const raw = await apiJson<Record<string, unknown>[]>('/api/pets');
-        const list = raw.map(petFromApi);
+        const uid = await requireUserId();
+        const { data: raw, error } = await supabase
+          .from('pets')
+          .select('*')
+          .eq('user_id', uid)
+          .order('created_at', { ascending: false });
+        throwOnError(error);
+        const list = (raw || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>)));
         setPets(list);
         if (list.length && !selectedPet) setSelectedPet(list[0].id);
       } catch {
@@ -123,17 +130,37 @@ export default function AddRecordPage({ onNavigate }: AddRecordPageProps) {
         setIsSubmitting(false);
         return;
       }
+      const uid = await requireUserId();
+      const pet = pets.find((p) => p.id === selectedPet);
       const attachmentDataUrls =
         attachments.length > 0 ? await Promise.all(attachments.map(fileToDataUrl)) : [];
-      await apiJson('/api/health-records', {
-        method: 'POST',
-        body: JSON.stringify({
-          petId: selectedPet,
-          recordType: selectedType,
-          date,
-          notes,
-          attachments: attachmentDataUrls,
-        }),
+      const uploaded: string[] = [];
+      for (let i = 0; i < attachmentDataUrls.length; i++) {
+        const url = await uploadDataUrlToStorage(
+          'hr-attachments',
+          `${uid}/${selectedPet}/${Date.now()}-${i}`,
+          attachmentDataUrls[i],
+        );
+        if (url) uploaded.push(url);
+      }
+      const title = `${selectedType} — ${pet?.name ?? 'Pet'}`;
+      const { error } = await supabase.from('health_records').insert({
+        pet_id: selectedPet,
+        title,
+        notes: notes.trim() || null,
+        attachments_json: uploaded.length ? JSON.stringify(uploaded) : null,
+        record_date: date,
+        record_type: selectedType,
+        pet_name: pet?.name ?? '',
+      });
+      throwOnError(error);
+      await supabase.from('activities').insert({
+        user_id: uid,
+        activity_type: 'health_record',
+        title: `Health record for ${pet?.name ?? 'pet'}`,
+        description: notes.trim() || selectedType,
+        pet_name: pet?.name ?? '',
+        occurred_at: new Date().toISOString(),
       });
       toast.success('Health record created!', {
         description: 'The record has been saved to your database.',

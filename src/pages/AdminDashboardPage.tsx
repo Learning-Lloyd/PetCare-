@@ -42,7 +42,17 @@ import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
-import { apiJson } from '@/lib/api';
+import {
+  adminCreateUserUnsupported,
+  adminDeleteReminder,
+  adminDeleteUser,
+  adminPatchReminder,
+  adminResetPasswordUnsupported,
+  adminSaveReminderRule,
+  adminUpdatePet,
+  adminUpdateUser,
+  loadAdminDashboardData,
+} from '@/lib/adminSupabase';
 
 interface Overview {
   userCount: number;
@@ -282,9 +292,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
 
   const fetchReport = useCallback(async (startDate: string, endDate: string) => {
     try {
-      const r = await apiJson<ReportSummary>(
-        `/api/admin/reports/summary?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`,
-      );
+      const { report: r } = await loadAdminDashboardData(startDate, endDate);
       setReport(r);
     } catch (e) {
       toast.error('Could not load report', { description: String(e) });
@@ -294,53 +302,21 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [
-        o,
-        u,
-        p,
-        s,
-        v,
-        f,
-        e,
-        h,
-        a,
-        r,
-        n,
-        rep,
-        th,
-        al,
-      ] = await Promise.all([
-        apiJson<Overview>('/api/admin/overview'),
-        apiJson<AdminUserRow[]>('/api/admin/users'),
-        apiJson<AdminPetRow[]>('/api/admin/pets'),
-        apiJson<AdminSettings>('/api/admin/settings'),
-        apiJson<AdminVaxRow[]>('/api/admin/vaccinations'),
-        apiJson<AdminFeedRow[]>('/api/admin/feeding-schedules'),
-        apiJson<AdminExerciseRow[]>('/api/admin/exercises'),
-        apiJson<AdminHealthRow[]>('/api/admin/health-records'),
-        apiJson<AdminApptRow[]>('/api/admin/appointments'),
-        apiJson<AdminReminderRow[]>('/api/admin/reminders'),
-        apiJson<AdminNotifRow[]>('/api/admin/notifications'),
-        apiJson<ReportSummary>(
-          `/api/admin/reports/summary?startDate=${encodeURIComponent(reportStartRef.current)}&endDate=${encodeURIComponent(reportEndRef.current)}`,
-        ),
-        apiJson<TransactionHistoryRow[]>('/api/admin/reports/transaction-history?limit=120'),
-        apiJson<ActivityLogRow[]>('/api/admin/reports/activity-logs?limit=120'),
-      ]);
-      setOverview(o);
-      setUsers(u);
-      setPets(p);
-      setSettings(s);
-      setVaccinations(v);
-      setFeeding(f);
-      setExercises(e);
-      setHealthRecords(h);
-      setAppointments(a);
-      setReminders(r);
-      setNotifications(n);
-      setReport(rep);
-      setTransactionHistory(th);
-      setActivityLogs(al);
+      const bundle = await loadAdminDashboardData(reportStartRef.current, reportEndRef.current);
+      setOverview(bundle.overview);
+      setUsers(bundle.users);
+      setPets(bundle.pets);
+      setSettings(bundle.settings);
+      setVaccinations(bundle.vaccinations);
+      setFeeding(bundle.feeding);
+      setExercises(bundle.exercises);
+      setHealthRecords(bundle.healthRecords);
+      setAppointments(bundle.appointments);
+      setReminders(bundle.reminders);
+      setNotifications(bundle.notifications);
+      setReport(bundle.report);
+      setTransactionHistory(bundle.transactionHistory);
+      setActivityLogs(bundle.activityLogs);
     } catch (e) {
       toast.error('Could not load admin data', { description: String(e) });
     } finally {
@@ -354,10 +330,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
 
   const saveReminderRule = async (days: number) => {
     try {
-      const s = await apiJson<AdminSettings>('/api/admin/settings', {
-        method: 'PATCH',
-        body: JSON.stringify({ reminderDaysBefore: days }),
-      });
+      const s = await adminSaveReminderRule(days);
       setSettings(s);
       toast.success('Reminder rule updated');
       loadAll();
@@ -368,25 +341,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
 
   const submitAddUser = async () => {
     try {
-      await apiJson('/api/admin/users', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: addName,
-          email: addEmail,
-          password: addPassword,
-          isAdmin: addRole === 'admin',
-          isVet: addRole === 'vet',
-          vetLicenseId: addVetLicense.trim() || undefined,
-        }),
-      });
-      toast.success('User created');
-      setAddUserOpen(false);
-      setAddName('');
-      setAddEmail('');
-      setAddPassword('');
-      setAddRole('owner');
-      setAddVetLicense('');
-      loadAll();
+      adminCreateUserUnsupported();
     } catch (e) {
       toast.error('Could not create user', { description: String(e) });
     }
@@ -404,16 +359,21 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   const submitEditUser = async () => {
     if (!editUser) return;
     try {
-      await apiJson(`/api/admin/users/${editUser.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          name: editName,
-          email: editEmail,
-          isAdmin: editRole === 'admin',
-          isVet: editRole === 'vet',
-          vetLicenseId: editVetLicense.trim() || null,
-          isActive: editIsActive,
-        }),
+      if (editUser.id === currentUserId && editRole !== 'admin') {
+        toast.error('You cannot remove your own admin role while logged in.');
+        return;
+      }
+      if (editUser.id === currentUserId && !editIsActive) {
+        toast.error('You cannot deactivate your own account while logged in.');
+        return;
+      }
+      await adminUpdateUser(editUser.id, {
+        name: editName,
+        email: editEmail,
+        isAdmin: editRole === 'admin',
+        isVet: editRole === 'vet',
+        vetLicenseId: editVetLicense.trim() || undefined,
+        isActive: editIsActive,
       });
       toast.success('User updated');
       setEditUser(null);
@@ -426,13 +386,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   const submitResetPassword = async () => {
     if (!resetUser) return;
     try {
-      await apiJson(`/api/admin/users/${resetUser.id}/reset-password`, {
-        method: 'POST',
-        body: JSON.stringify({ newPassword: resetPassword }),
-      });
-      toast.success('Password reset');
-      setResetUser(null);
-      setResetPassword('');
+      adminResetPasswordUnsupported();
     } catch (e) {
       toast.error('Could not reset password', { description: String(e) });
     }
@@ -444,10 +398,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
       return;
     }
     try {
-      await apiJson(`/api/admin/users/${row.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ isActive: active }),
-      });
+      await adminUpdateUser(row.id, { isActive: active });
       toast.success(active ? 'Account activated' : 'Account deactivated');
       loadAll();
     } catch (e) {
@@ -468,7 +419,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
       return;
     }
     try {
-      await apiJson(`/api/admin/users/${row.id}`, { method: 'DELETE' });
+      await adminDeleteUser(row.id);
       toast.success('User removed');
       loadAll();
     } catch (e) {
@@ -490,17 +441,14 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   const submitEditPet = async () => {
     if (!editPet) return;
     try {
-      await apiJson(`/api/admin/pets/${editPet.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          name: petName,
-          type: petType,
-          breed: petBreed,
-          age: Number(petAge),
-          weight: Number(petWeight),
-          status: petStatus,
-          healthCondition: petHealth || null,
-        }),
+      await adminUpdatePet(editPet.id, {
+        name: petName,
+        type: petType,
+        breed: petBreed,
+        age: Number(petAge),
+        weight: Number(petWeight),
+        status: petStatus,
+        healthCondition: petHealth || undefined,
       });
       toast.success('Pet updated');
       setEditPet(null);
@@ -512,10 +460,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
 
   const toggleReminderDone = async (row: AdminReminderRow) => {
     try {
-      await apiJson(`/api/admin/reminders/${row.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ completed: !row.completed }),
-      });
+      await adminPatchReminder(row.id, { completed: !row.completed });
       loadAll();
     } catch (e) {
       toast.error('Could not update reminder', { description: String(e) });
@@ -525,7 +470,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   const deleteReminder = async (row: AdminReminderRow) => {
     if (!confirm(`Delete reminder “${row.title}”?`)) return;
     try {
-      await apiJson(`/api/admin/reminders/${row.id}`, { method: 'DELETE' });
+      await adminDeleteReminder(row.id);
       toast.success('Reminder removed');
       loadAll();
     } catch (e) {

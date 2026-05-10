@@ -7,7 +7,8 @@ import { ArrowLeft, Camera, Lightbulb, Search } from 'lucide-react';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { toast } from 'sonner';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { mapPetRow, requireUserId, throwOnError, uploadFileToStorage } from '@/lib/supabaseHelpers';
 import { petFromApi } from '@/lib/models';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -183,8 +184,16 @@ export default function AddPetPage({ onNavigate, editMode = false }: AddPetPageP
     setEditingId(id);
     (async () => {
       try {
-        const raw = await apiJson<Record<string, unknown>[]>('/api/pets');
-        const p = raw.map(petFromApi).find((x: Pet) => x.id === id);
+        const uid = await requireUserId();
+        const { data: raw, error } = await supabase
+          .from('pets')
+          .select('*')
+          .eq('user_id', uid)
+          .order('created_at', { ascending: false });
+        throwOnError(error);
+        const p = (raw || [])
+          .map((row) => petFromApi(mapPetRow(row as Record<string, unknown>)))
+          .find((x: Pet) => x.id === id);
         if (p) {
           const normalizedType = (petTypes as string[]).includes(p.type) ? p.type : 'Other';
           setFormData({
@@ -266,54 +275,59 @@ export default function AddPetPage({ onNavigate, editMode = false }: AddPetPageP
     return () => ctx.revert();
   }, []);
 
-  const fileToDataUrl = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('Could not read file'));
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.readAsDataURL(file);
-    });
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     try {
       const typeToSave =
         formData.type === 'Other' ? (formData.customType || '').trim() || 'Other' : formData.type;
-      const body = JSON.stringify({
+      const uid = await requireUserId();
+      const payload = {
         name: formData.name,
-        type: typeToSave,
+        pet_type: typeToSave,
         breed: formData.breed,
-        age: Number(formData.age),
-        weight: Number(formData.weight),
-        healthCondition: formData.healthCondition || undefined,
-      });
+        age_years: Number(formData.age),
+        weight_kg: Number(formData.weight),
+        health_condition: formData.healthCondition.trim() || null,
+        species: typeToSave,
+      };
       if (editMode && editingId) {
-        await apiJson(`/api/pets/${editingId}`, { method: 'PATCH', body });
+        const { error: eu } = await supabase.from('pets').update(payload).eq('id', editingId).eq('user_id', uid);
+        throwOnError(eu);
         if (selectedPhoto) {
-          const dataUrl = await fileToDataUrl(selectedPhoto);
-          const updated = await apiJson<Record<string, unknown>>(`/api/pets/${editingId}/photo`, {
-            method: 'POST',
-            body: JSON.stringify({ dataUrl }),
-          });
-          const p = petFromApi(updated);
+          const ext = selectedPhoto.name.split('.').pop() || 'jpg';
+          const path = `${uid}/${editingId}/${Date.now()}.${ext}`;
+          const url = await uploadFileToStorage('pet-photos', path, selectedPhoto);
+          if (url) {
+            const { error: ep } = await supabase.from('pets').update({ photo_url: url }).eq('id', editingId);
+            throwOnError(ep);
+            setSelectedPhotoPreviewUrl(url);
+          } else {
+            toast.message('Photo skipped', { description: 'Configure the pet-photos storage bucket or try again.' });
+          }
           setSelectedPhoto(null);
-          setSelectedPhotoPreviewUrl(p.photo ? String(p.photo) : null);
         }
         sessionStorage.removeItem('editPetId');
         toast.success('Pet profile updated!', { description: `${formData.name} has been saved.` });
       } else {
-        const created = await apiJson<Record<string, unknown>>('/api/pets', { method: 'POST', body });
-        const createdPet = petFromApi(created);
+        const { data: created, error: ec } = await supabase
+          .from('pets')
+          .insert({ ...payload, user_id: uid, status: 'Active' })
+          .select()
+          .single();
+        throwOnError(ec);
+        const createdPet = petFromApi(mapPetRow(created as Record<string, unknown>));
         if (selectedPhoto) {
-          const dataUrl = await fileToDataUrl(selectedPhoto);
-          const updated = await apiJson<Record<string, unknown>>(`/api/pets/${createdPet.id}/photo`, {
-            method: 'POST',
-            body: JSON.stringify({ dataUrl }),
-          });
-          const p = petFromApi(updated);
+          const ext = selectedPhoto.name.split('.').pop() || 'jpg';
+          const path = `${uid}/${createdPet.id}/${Date.now()}.${ext}`;
+          const url = await uploadFileToStorage('pet-photos', path, selectedPhoto);
+          if (url) {
+            await supabase.from('pets').update({ photo_url: url }).eq('id', createdPet.id);
+            setSelectedPhotoPreviewUrl(url);
+          } else {
+            toast.message('Photo skipped', { description: 'Configure the pet-photos storage bucket or try again.' });
+          }
           setSelectedPhoto(null);
-          setSelectedPhotoPreviewUrl(p.photo ? String(p.photo) : null);
         }
         toast.success('New pet added!', {
           description: `${formData.name} is saved. You can add health records, vaccines, and more.`,

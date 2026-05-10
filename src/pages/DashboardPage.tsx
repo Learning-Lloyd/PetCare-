@@ -12,7 +12,17 @@ import {
 } from 'lucide-react';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import {
+  mapActivityRow,
+  mapAppointmentRow,
+  mapExerciseRow,
+  mapHealthRecordRow,
+  mapPetRow,
+  mapReminderRow,
+  mapVaccinationRow,
+  throwOnError,
+} from '@/lib/supabaseHelpers';
 import {
   activityFromApi,
   appointmentFromApi,
@@ -43,22 +53,79 @@ export default function DashboardPage({ onNavigate, userName }: DashboardPagePro
 
   const load = useCallback(async () => {
     try {
-      const [p, a, r, v, e, act, rem] = await Promise.all([
-        apiJson<Record<string, unknown>[]>('/api/pets'),
-        apiJson<Record<string, unknown>[]>('/api/appointments'),
-        apiJson<Record<string, unknown>[]>('/api/health-records'),
-        apiJson<Record<string, unknown>[]>('/api/vaccinations'),
-        apiJson<Record<string, unknown>[]>('/api/exercises'),
-        apiJson<Record<string, unknown>[]>('/api/activities'),
-        apiJson<Record<string, unknown>[]>('/api/reminders'),
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      const uid = user.id;
+      const { data: petsRaw, error: eP } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false });
+      throwOnError(eP);
+      const petIds = (petsRaw || []).map((row) => String((row as Record<string, unknown>).id));
+      const empty = petIds.length === 0;
+
+      const [apRes, hrRes, vRes, exRes, actRes, remRes] = await Promise.all([
+        empty
+          ? Promise.resolve({ data: [] as Record<string, unknown>[] })
+          : supabase.from('appointments').select('*').in('pet_id', petIds).order('appt_date', { ascending: true }),
+        empty
+          ? Promise.resolve({ data: [] as Record<string, unknown>[] })
+          : supabase.from('health_records').select('*').in('pet_id', petIds).order('record_date', { ascending: false }),
+        empty
+          ? Promise.resolve({ data: [] as Record<string, unknown>[] })
+          : supabase.from('vaccinations').select('*').in('pet_id', petIds).order('date_given', { ascending: false }),
+        empty
+          ? Promise.resolve({ data: [] as Record<string, unknown>[] })
+          : supabase.from('exercise_logs').select('*').in('pet_id', petIds).order('log_date', { ascending: false }),
+        supabase.from('activities').select('*').eq('user_id', uid).order('occurred_at', { ascending: false }).limit(50),
+        supabase.from('reminders').select('*').eq('user_id', uid).order('reminder_date', { ascending: true }),
       ]);
-      setPets(p.map(petFromApi));
-      setAppointments(a.map(appointmentFromApi));
-      setRecords(r.map(healthRecordFromApi));
-      setVaccinations(v.map(vaccinationFromApi));
-      setExercises(e.map(exerciseFromApi));
-      setActivities(act.map(activityFromApi));
-      setReminders(rem.map(reminderFromApi));
+      throwOnError(apRes.error);
+      throwOnError(hrRes.error);
+      throwOnError(vRes.error);
+      throwOnError(exRes.error);
+      throwOnError(actRes.error);
+      throwOnError(remRes.error);
+
+      const vetIds = [
+        ...new Set(
+          (apRes.data || [])
+            .map((x) => (x as Record<string, unknown>).vet_user_id)
+            .filter((id) => id != null)
+            .map(String),
+        ),
+      ];
+      let vetNameById: Record<string, string> = {};
+      if (vetIds.length) {
+        const { data: vets, error: eV } = await supabase.from('users').select('id,name').in('id', vetIds);
+        throwOnError(eV);
+        vetNameById = Object.fromEntries((vets || []).map((v) => [String(v.id), String(v.name ?? '')]));
+      }
+
+      const p = (petsRaw || []) as Record<string, unknown>[];
+      const a = (apRes.data || []) as Record<string, unknown>[];
+      const r = (hrRes.data || []) as Record<string, unknown>[];
+      const v = (vRes.data || []) as Record<string, unknown>[];
+      const e = (exRes.data || []) as Record<string, unknown>[];
+      const act = (actRes.data || []) as Record<string, unknown>[];
+      const rem = (remRes.data || []) as Record<string, unknown>[];
+
+      setPets(p.map((row) => petFromApi(mapPetRow(row))));
+      setAppointments(
+        a.map((row) =>
+          appointmentFromApi(
+            mapAppointmentRow(row, vetNameById[String((row as Record<string, unknown>).vet_user_id)]),
+          ),
+        ),
+      );
+      setRecords(r.map((row) => healthRecordFromApi(mapHealthRecordRow(row))));
+      setVaccinations(v.map((row) => vaccinationFromApi(mapVaccinationRow(row))));
+      setExercises(e.map((row) => exerciseFromApi(mapExerciseRow(row))));
+      setActivities(act.map((row) => activityFromApi(mapActivityRow(row))));
+      setReminders(rem.map((row) => reminderFromApi(mapReminderRow(row))));
     } catch {
       /* keep zeros */
     }

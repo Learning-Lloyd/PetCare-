@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { toast } from 'sonner';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import { mapPetRow, mapVaccinationRow, requireUserId, throwOnError } from '@/lib/supabaseHelpers';
 import { petFromApi, vaccinationFromApi } from '@/lib/models';
 
 gsap.registerPlugin(ScrollTrigger);
@@ -29,14 +30,28 @@ export default function VaccinationsPage({ onNavigate: _onNavigate }: Vaccinatio
 
   const load = useCallback(async () => {
     try {
-      const [v, p] = await Promise.all([
-        apiJson<Record<string, unknown>[]>('/api/vaccinations'),
-        apiJson<Record<string, unknown>[]>('/api/pets'),
-      ]);
-      setVaccinations(v.map(vaccinationFromApi));
-      const plist = p.map(petFromApi);
+      const uid = await requireUserId();
+      const { data: petsRaw, error: eP } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false });
+      throwOnError(eP);
+      const plist = (petsRaw || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>)));
       setPets(plist);
       setModalPet((prev) => prev || (plist[0]?.id ?? ''));
+      const petIds = plist.map((p) => p.id);
+      if (!petIds.length) {
+        setVaccinations([]);
+        return;
+      }
+      const { data: v, error: eV } = await supabase
+        .from('vaccinations')
+        .select('*')
+        .in('pet_id', petIds)
+        .order('date_given', { ascending: false });
+      throwOnError(eV);
+      setVaccinations((v || []).map((row) => vaccinationFromApi(mapVaccinationRow(row as Record<string, unknown>))));
     } catch (e) {
       toast.error('Could not load vaccinations', { description: String(e) });
     }
@@ -83,11 +98,14 @@ export default function VaccinationsPage({ onNavigate: _onNavigate }: Vaccinatio
 
   const handleStatusChange = async (id: string, newStatus: 'Done' | 'Pending') => {
     try {
-      const updated = await apiJson<Record<string, unknown>>(`/api/vaccinations/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: newStatus }),
-      });
-      const row = vaccinationFromApi(updated);
+      const { data: updated, error } = await supabase
+        .from('vaccinations')
+        .update({ status: newStatus })
+        .eq('id', id)
+        .select()
+        .single();
+      throwOnError(error);
+      const row = vaccinationFromApi(mapVaccinationRow(updated as Record<string, unknown>));
       setVaccinations((prev) => prev.map((v) => (v.id === id ? row : v)));
       toast.success(`Vaccination marked as ${newStatus.toLowerCase()}`);
     } catch (e) {
@@ -123,17 +141,17 @@ export default function VaccinationsPage({ onNavigate: _onNavigate }: Vaccinatio
       return;
     }
     try {
-      await apiJson('/api/vaccinations', {
-        method: 'POST',
-        body: JSON.stringify({
-          petId: modalPet,
-          vaccineName: modalName.trim(),
-          date: modalDate,
-          nextDueDate: modalNext || null,
-          notes: modalNotes || null,
-          status: 'Pending',
-        }),
+      const pet = pets.find((p) => p.id === modalPet);
+      const { error } = await supabase.from('vaccinations').insert({
+        pet_id: modalPet,
+        pet_name: pet?.name ?? '',
+        vaccine_name: modalName.trim(),
+        date_given: modalDate,
+        next_due_date: modalNext || null,
+        notes: modalNotes.trim() || null,
+        status: 'Pending',
       });
+      throwOnError(error);
       toast.success('Vaccination added');
       setShowAddModal(false);
       setModalName('');

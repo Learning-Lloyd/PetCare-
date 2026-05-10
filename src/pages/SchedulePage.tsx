@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ViewType, Appointment, Pet, AppointmentStatus } from '@/types';
-import { apiJson } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import {
+  mapAppointmentRow,
+  mapPetRow,
+  ownerDeletePendingAppointment,
+  ownerRespondToReschedule,
+  requireUserId,
+  throwOnError,
+} from '@/lib/supabaseHelpers';
 import { appointmentFromApi, petFromApi } from '@/lib/models';
 import { toast } from 'sonner';
 import { Plus, Calendar, ChevronLeft, ChevronRight, Clock, CheckCircle2, CalendarDays, Trash2 } from 'lucide-react';
@@ -43,12 +51,47 @@ export default function SchedulePage({ onNavigate }: SchedulePageProps) {
 
   const load = useCallback(async () => {
     try {
-      const [a, p] = await Promise.all([
-        apiJson<Record<string, unknown>[]>('/api/appointments'),
-        apiJson<Record<string, unknown>[]>('/api/pets'),
-      ]);
-      setAppointments(a.map(appointmentFromApi));
-      setPets(p.map(petFromApi));
+      const uid = await requireUserId();
+      const { data: petsRaw, error: eP } = await supabase
+        .from('pets')
+        .select('*')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false });
+      throwOnError(eP);
+      const p = (petsRaw || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>)));
+      setPets(p);
+      const petIds = p.map((x) => x.id);
+      if (!petIds.length) {
+        setAppointments([]);
+        return;
+      }
+      const { data: a, error: eA } = await supabase
+        .from('appointments')
+        .select('*')
+        .in('pet_id', petIds)
+        .order('appt_date', { ascending: true });
+      throwOnError(eA);
+      const vetIds = [
+        ...new Set(
+          (a || [])
+            .map((x) => (x as Record<string, unknown>).vet_user_id)
+            .filter((id) => id != null)
+            .map(String),
+        ),
+      ];
+      let vetNameById: Record<string, string> = {};
+      if (vetIds.length) {
+        const { data: vets, error: eV } = await supabase.from('users').select('id,name').in('id', vetIds);
+        throwOnError(eV);
+        vetNameById = Object.fromEntries((vets || []).map((v) => [String(v.id), String(v.name ?? '')]));
+      }
+      setAppointments(
+        (a || []).map((row) =>
+          appointmentFromApi(
+            mapAppointmentRow(row as Record<string, unknown>, vetNameById[String((row as Record<string, unknown>).vet_user_id)]),
+          ),
+        ),
+      );
     } catch (e) {
       toast.error('Could not load schedule', { description: String(e) });
     }
@@ -136,7 +179,8 @@ export default function SchedulePage({ onNavigate }: SchedulePageProps) {
 
   const cancelPending = async (id: string) => {
     try {
-      await apiJson(`/api/appointments/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const uid = await requireUserId();
+      await ownerDeletePendingAppointment(id, uid);
       toast.success('Booking cancelled');
       await load();
     } catch (e) {
@@ -146,10 +190,8 @@ export default function SchedulePage({ onNavigate }: SchedulePageProps) {
 
   const respondReschedule = async (id: string, accept: boolean) => {
     try {
-      await apiJson(`/api/appointments/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ acceptProposed: accept }),
-      });
+      const uid = await requireUserId();
+      await ownerRespondToReschedule(id, uid, accept);
       toast.success(accept ? 'New time confirmed' : 'You declined the new time');
       await load();
     } catch (e) {
