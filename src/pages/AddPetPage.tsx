@@ -316,6 +316,7 @@ export default function AddPetPage({ onNavigate, editMode = false }: AddPetPageP
           .select()
           .single();
         throwOnError(ec);
+        if (created == null) throw new Error('Pet was not created.');
         const createdPet = petFromApi(mapPetRow(created as Record<string, unknown>));
         if (selectedPhoto) {
           const ext = selectedPhoto.name.split('.').pop() || 'jpg';

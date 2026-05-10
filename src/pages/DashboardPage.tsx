@@ -21,6 +21,7 @@ import {
   mapPetRow,
   mapReminderRow,
   mapVaccinationRow,
+  emptySupabaseRows,
   throwOnError,
 } from '@/lib/supabaseHelpers';
 import {
@@ -67,32 +68,56 @@ export default function DashboardPage({ onNavigate, userName }: DashboardPagePro
       const petIds = (petsRaw || []).map((row) => String((row as Record<string, unknown>).id));
       const empty = petIds.length === 0;
 
-      const [apRes, hrRes, vRes, exRes, actRes, remRes] = await Promise.all([
-        empty
-          ? Promise.resolve({ data: [] as Record<string, unknown>[] })
-          : supabase.from('appointments').select('*').in('pet_id', petIds).order('appt_date', { ascending: true }),
-        empty
-          ? Promise.resolve({ data: [] as Record<string, unknown>[] })
-          : supabase.from('health_records').select('*').in('pet_id', petIds).order('record_date', { ascending: false }),
-        empty
-          ? Promise.resolve({ data: [] as Record<string, unknown>[] })
-          : supabase.from('vaccinations').select('*').in('pet_id', petIds).order('date_given', { ascending: false }),
-        empty
-          ? Promise.resolve({ data: [] as Record<string, unknown>[] })
-          : supabase.from('exercise_logs').select('*').in('pet_id', petIds).order('log_date', { ascending: false }),
-        supabase.from('activities').select('*').eq('user_id', uid).order('occurred_at', { ascending: false }).limit(50),
-        supabase.from('reminders').select('*').eq('user_id', uid).order('reminder_date', { ascending: true }),
-      ]);
-      throwOnError(apRes.error);
-      throwOnError(hrRes.error);
-      throwOnError(vRes.error);
-      throwOnError(exRes.error);
-      throwOnError(actRes.error);
-      throwOnError(remRes.error);
+      const appointmentsQ = empty
+        ? Promise.resolve(emptySupabaseRows())
+        : supabase.from('appointments').select('*').in('pet_id', petIds).order('appt_date', { ascending: true });
+      const healthQ = empty
+        ? Promise.resolve(emptySupabaseRows())
+        : supabase.from('health_records').select('*').in('pet_id', petIds).order('record_date', { ascending: false });
+      const vaccinationsQ = empty
+        ? Promise.resolve(emptySupabaseRows())
+        : supabase.from('vaccinations').select('*').in('pet_id', petIds).order('date_given', { ascending: false });
+      const exerciseQ = empty
+        ? Promise.resolve(emptySupabaseRows())
+        : supabase.from('exercise_logs').select('*').in('pet_id', petIds).order('log_date', { ascending: false });
+      const activitiesQ = supabase
+        .from('activities')
+        .select('*')
+        .eq('user_id', uid)
+        .order('occurred_at', { ascending: false })
+        .limit(50);
+      const remindersQ = supabase
+        .from('reminders')
+        .select('*')
+        .eq('user_id', uid)
+        .order('reminder_date', { ascending: true });
+
+      const [
+        appointmentsResult,
+        healthRecordsResult,
+        vaccinationsResult,
+        exercisesResult,
+        activitiesResult,
+        remindersResult,
+      ] = await Promise.all([appointmentsQ, healthQ, vaccinationsQ, exerciseQ, activitiesQ, remindersQ]);
+
+      const { data: appointmentsData, error: appointmentsError } = appointmentsResult;
+      const { data: healthRecordsData, error: healthRecordsError } = healthRecordsResult;
+      const { data: vaccinationsData, error: vaccinationsError } = vaccinationsResult;
+      const { data: exercisesData, error: exercisesError } = exercisesResult;
+      const { data: activitiesData, error: activitiesError } = activitiesResult;
+      const { data: remindersData, error: remindersError } = remindersResult;
+
+      throwOnError(appointmentsError);
+      throwOnError(healthRecordsError);
+      throwOnError(vaccinationsError);
+      throwOnError(exercisesError);
+      throwOnError(activitiesError);
+      throwOnError(remindersError);
 
       const vetIds = [
         ...new Set(
-          (apRes.data || [])
+          (appointmentsData || [])
             .map((x) => (x as Record<string, unknown>).vet_user_id)
             .filter((id) => id != null)
             .map(String),
@@ -106,12 +131,12 @@ export default function DashboardPage({ onNavigate, userName }: DashboardPagePro
       }
 
       const p = (petsRaw || []) as Record<string, unknown>[];
-      const a = (apRes.data || []) as Record<string, unknown>[];
-      const r = (hrRes.data || []) as Record<string, unknown>[];
-      const v = (vRes.data || []) as Record<string, unknown>[];
-      const e = (exRes.data || []) as Record<string, unknown>[];
-      const act = (actRes.data || []) as Record<string, unknown>[];
-      const rem = (remRes.data || []) as Record<string, unknown>[];
+      const a = (appointmentsData || []) as Record<string, unknown>[];
+      const r = (healthRecordsData || []) as Record<string, unknown>[];
+      const v = (vaccinationsData || []) as Record<string, unknown>[];
+      const e = (exercisesData || []) as Record<string, unknown>[];
+      const act = (activitiesData || []) as Record<string, unknown>[];
+      const rem = (remindersData || []) as Record<string, unknown>[];
 
       setPets(p.map((row) => petFromApi(mapPetRow(row))));
       setAppointments(

@@ -111,6 +111,7 @@ export default function FeedingPage({ onNavigate: _onNavigate }: FeedingPageProp
         .select()
         .single();
       throwOnError(error);
+      if (updated == null) throw new Error('Feeding schedule not found.');
       const row = feedingFromApi(mapFeedingRow(updated as Record<string, unknown>));
       setSchedules((prev) => prev.map((s) => (s.id === id ? row : s)));
       toast.success(next ? 'Marked complete' : 'Marked incomplete');

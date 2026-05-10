@@ -34,14 +34,16 @@ export default function RemindersPage({ onNavigate: _onNavigate }: RemindersPage
   const load = useCallback(async () => {
     try {
       const uid = await requireUserId();
-      const [rRes, pRes] = await Promise.all([
+      const [remindersResult, petsResult] = await Promise.all([
         supabase.from('reminders').select('*').eq('user_id', uid).order('reminder_date', { ascending: true }),
         supabase.from('pets').select('*').eq('user_id', uid).order('created_at', { ascending: false }),
       ]);
-      throwOnError(rRes.error);
-      throwOnError(pRes.error);
-      setReminders((rRes.data || []).map((row) => reminderFromApi(mapReminderRow(row as Record<string, unknown>))));
-      setPets((pRes.data || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>))));
+      const { data: remindersRows, error: remindersError } = remindersResult;
+      const { data: petsRows, error: petsError } = petsResult;
+      throwOnError(remindersError);
+      throwOnError(petsError);
+      setReminders((remindersRows || []).map((row) => reminderFromApi(mapReminderRow(row as Record<string, unknown>))));
+      setPets((petsRows || []).map((row) => petFromApi(mapPetRow(row as Record<string, unknown>))));
     } catch (e) {
       toast.error('Could not load reminders', { description: String(e) });
     }
@@ -98,6 +100,7 @@ export default function RemindersPage({ onNavigate: _onNavigate }: RemindersPage
         .select()
         .single();
       throwOnError(error);
+      if (updated == null) throw new Error('Reminder not found.');
       const row = reminderFromApi(mapReminderRow(updated as Record<string, unknown>));
       setReminders((prev) => prev.map((r) => (r.id === id ? row : r)));
       toast.success(next ? 'Marked complete' : 'Reopened');

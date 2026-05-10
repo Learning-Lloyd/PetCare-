@@ -105,6 +105,7 @@ export default function VaccinationsPage({ onNavigate: _onNavigate }: Vaccinatio
         .select()
         .single();
       throwOnError(error);
+      if (updated == null) throw new Error('Vaccination not found.');
       const row = vaccinationFromApi(mapVaccinationRow(updated as Record<string, unknown>));
       setVaccinations((prev) => prev.map((v) => (v.id === id ? row : v)));
       toast.success(`Vaccination marked as ${newStatus.toLowerCase()}`);

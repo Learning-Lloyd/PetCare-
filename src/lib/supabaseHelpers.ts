@@ -7,6 +7,14 @@ export function throwOnError(error: PostgrestError | null): void {
   if (error) throw new Error(error.message);
 }
 
+/** Same `{ data, error }` shape as `supabase.from().select()` for empty stubs in parallel loads. */
+export function emptySupabaseRows<T extends Record<string, unknown> = Record<string, unknown>>(): {
+  data: T[]
+  error: PostgrestError | null
+} {
+  return { data: [], error: null };
+}
+
 export async function requireUserId(): Promise<string> {
   const {
     data: { user },
