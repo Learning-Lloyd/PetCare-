@@ -7,7 +7,11 @@ import { PawPrint, User, Mail, Lock, Eye, EyeOff, ShieldCheck } from 'lucide-rea
 import { gsap } from 'gsap';
 
 interface RegisterPageProps {
-  onRegister: (name: string, email: string, password: string) => void | Promise<void>;
+  onRegister: (
+    name: string,
+    email: string,
+    password: string,
+  ) => Promise<{ ok: boolean; message?: string }>;
   onNavigate: (view: ViewType) => void;
 }
 
@@ -18,6 +22,7 @@ export default function RegisterPage({ onRegister, onNavigate }: RegisterPagePro
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -45,6 +50,7 @@ export default function RegisterPage({ onRegister, onNavigate }: RegisterPagePro
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setStatusMessage(null);
     
     if (password !== confirmPassword) {
       alert('Passwords do not match');
@@ -52,7 +58,16 @@ export default function RegisterPage({ onRegister, onNavigate }: RegisterPagePro
     }
     
     setIsLoading(true);
-    await onRegister(name, email, password);
+    const result = await onRegister(name, email, password);
+    if (result.ok) {
+      setStatusMessage(result.message || 'User created successfully.');
+      setName('');
+      setEmail('');
+      setPassword('');
+      setConfirmPassword('');
+    } else if (result.message) {
+      setStatusMessage(result.message);
+    }
     setIsLoading(false);
   };
 
@@ -104,6 +119,11 @@ export default function RegisterPage({ onRegister, onNavigate }: RegisterPagePro
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
+          {statusMessage ? (
+            <div className="register-input rounded-xl border border-[#D6E3F0] bg-[#F3F7FB] px-3 py-2 text-sm text-[#1A202C]">
+              {statusMessage}
+            </div>
+          ) : null}
           <div className="register-input space-y-2">
             <Label htmlFor="name" className="text-xs font-medium text-[#5A6B7A] uppercase tracking-wide">
               Full Name

@@ -34,6 +34,11 @@ import TopBar from '@/components/TopBar';
 import VetSidebar from '@/components/VetSidebar';
 import VetTopBar from '@/components/VetTopBar';
 
+type RegisterResult = {
+  ok: boolean;
+  message?: string;
+};
+
 async function loadSessionUser(): Promise<User | null> {
   const {
     data: { session },
@@ -106,45 +111,40 @@ function App() {
     }
   };
 
-  const handleRegister = async (name: string, email: string, password: string) => {
+  const handleRegister = async (name: string, email: string, password: string): Promise<RegisterResult> => {
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: { full_name: name },
+      const { data, error } = await supabase.functions.invoke('create-admin-user', {
+        body: {
+          email,
+          password,
+          full_name: name,
         },
       });
       if (error) {
-        toast.error('Registration failed', { description: authErrorMessage(error) });
-        return;
+        const message = error.message || 'Registration failed';
+        toast.error('Registration failed', { description: message });
+        return { ok: false, message };
       }
-      if (!data.user) return;
-      if (data.session) {
-        const insertErr = await insertPublicUserProfileFromAuth({
-          id: String(data.user.id),
-          email: String(data.user.email ?? email),
-          name,
-        });
-        if (insertErr) {
-          toast.error('Database error saving new user', { description: insertErr.message });
-          await supabase.auth.signOut();
-          return;
-        }
+      const createdUser = (data as { user?: { id?: string; email?: string } } | null)?.user;
+      if (!createdUser?.id) {
+        toast.error('Registration failed', { description: 'User creation returned no id.' });
+        return { ok: false, message: 'User creation returned no id.' };
       }
-      if (!data.session) {
-        toast.success('Check your email', {
-          description: 'Confirm your address to finish signing up, then sign in.',
-        });
-        return;
+      // Keep frontend fallback profile insert aligned to public.users (uuid id).
+      const insertErr = await insertPublicUserProfileFromAuth({
+        id: String(createdUser.id),
+        email: String(createdUser.email ?? email),
+        name,
+      });
+      if (insertErr) {
+        toast.error('Database error saving new user', { description: insertErr.message });
+        return { ok: false, message: insertErr.message };
       }
-      const profile = await fetchProfileRow(data.user.id).catch(() => null);
-      const u = toAppUser(data.user, profile);
-      setUser(u);
-      setCurrentView('dashboard');
-      toast.success('Account created!', { description: `Welcome, ${name}` });
+      toast.success('User created', { description: `${email} can log in immediately.` });
+      return { ok: true, message: 'User created successfully.' };
     } catch (e) {
       toast.error('Registration failed', { description: String(e) });
+      return { ok: false, message: String(e) };
     }
   };
 
