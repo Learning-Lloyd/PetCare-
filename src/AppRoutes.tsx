@@ -7,7 +7,7 @@ import LoginPage from '@/pages/LoginPage';
 import RegisterPage from '@/pages/RegisterPage';
 import App from '@/App';
 import { Spinner } from '@/components/ui/spinner';
-import { attemptAdminRegistration, attemptLogin } from '@/lib/authFlows';
+import { attemptLogin } from '@/lib/authFlows';
 import type { ViewType } from '@/types';
 
 function LoginRoute() {
@@ -67,23 +67,13 @@ function RegisterRoute() {
     return <Navigate to="/" replace />;
   }
 
-  const handleRegister = async (name: string, email: string, password: string) => {
-    const result = await attemptAdminRegistration(name, email, password);
-    if (!result.ok) {
-      toast.error('Registration failed', { description: result.message });
-      return { ok: false as const, message: result.message };
-    }
-    toast.success('User created', { description: `${email} can log in immediately.` });
-    return { ok: true as const, message: result.message };
-  };
-
   const onNavigate = (view: ViewType) => {
     if (view === 'login') navigate('/login');
   };
 
   return (
     <div className="min-h-screen bg-[#F6F8FC]">
-      <RegisterPage onRegister={handleRegister} onNavigate={onNavigate} />
+      <RegisterPage onNavigate={onNavigate} />
     </div>
   );
 }

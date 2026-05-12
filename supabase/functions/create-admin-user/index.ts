@@ -50,40 +50,6 @@ Deno.serve(async (req) => {
     }
 
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
-    const authHeader = req.headers.get("Authorization") || "";
-    const jwt = authHeader.replace("Bearer ", "").trim();
-    if (!jwt) {
-      return new Response(
-        JSON.stringify({ error: "Missing bearer token." }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
-    const { data: callerData, error: callerErr } = await adminClient.auth.getUser(jwt);
-    if (callerErr || !callerData.user?.id) {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized caller." }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
-    const { data: adminRow, error: adminErr } = await adminClient
-      .from("users")
-      .select("is_admin")
-      .eq("id", callerData.user.id)
-      .maybeSingle();
-    if (adminErr) {
-      return new Response(
-        JSON.stringify({ error: adminErr.message }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-    if (!adminRow || Number(adminRow.is_admin) !== 1) {
-      return new Response(
-        JSON.stringify({ error: "Only admins can create users." }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
 
     const payload = (await req.json()) as CreateUserPayload;
     const email = String(payload.email || "").trim().toLowerCase();

@@ -1,0 +1,3 @@
+# Public registration calls this function without a user session; the handler uses the service role.
+[functions.create-admin-user]
+verify_jwt = false

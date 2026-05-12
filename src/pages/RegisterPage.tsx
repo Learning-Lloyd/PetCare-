@@ -1,27 +1,30 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { ViewType } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { PawPrint, User, Mail, Lock, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { gsap } from 'gsap';
+import { toast } from 'sonner';
+import { supabase } from '@/lib/supabaseClient';
+import { attemptAdminRegistration } from '@/lib/authFlows';
+import { Spinner } from '@/components/ui/spinner';
 
 interface RegisterPageProps {
-  onRegister: (
-    name: string,
-    email: string,
-    password: string,
-  ) => Promise<{ ok: boolean; message?: string }>;
   onNavigate: (view: ViewType) => void;
 }
 
-export default function RegisterPage({ onRegister, onNavigate }: RegisterPageProps) {
+export default function RegisterPage({ onNavigate }: RegisterPageProps) {
+  const navigate = useNavigate();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  /** After account is created: sign-in + redirect (spinner overlay). */
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   
   const cardRef = useRef<HTMLDivElement>(null);
@@ -48,31 +51,59 @@ export default function RegisterPage({ onRegister, onNavigate }: RegisterPagePro
     return () => ctx.revert();
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatusMessage(null);
-    
+
     if (password !== confirmPassword) {
       alert('Passwords do not match');
       return;
     }
-    
+
+    const emailTrim = email.trim();
     setIsLoading(true);
-    const result = await onRegister(name, email, password);
-    if (result.ok) {
-      setStatusMessage(result.message || 'User created successfully.');
-      setName('');
-      setEmail('');
-      setPassword('');
-      setConfirmPassword('');
-    } else if (result.message) {
-      setStatusMessage(result.message);
+    const result = await attemptAdminRegistration(name.trim(), emailTrim, password);
+    if (!result.ok) {
+      toast.error('Registration failed', { description: result.message });
+      if (result.message) setStatusMessage(result.message);
+      setIsLoading(false);
+      return;
     }
-    setIsLoading(false);
+
+    toast.success('Account created', { description: 'Signing you in…' });
+    setIsSigningIn(true);
+
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: emailTrim.toLowerCase(),
+      password,
+    });
+    if (signInError) {
+      toast.error('Could not sign in', {
+        description: signInError.message + ' Try logging in manually.',
+      });
+      setStatusMessage('Account created. Please go to Login and sign in.');
+      setIsSigningIn(false);
+      setIsLoading(false);
+      return;
+    }
+
+    await new Promise((r) => setTimeout(r, 450));
+    navigate('/dashboard', { replace: true });
   };
 
   return (
     <div className="min-h-screen bg-[#F6F8FC] flex items-center justify-center relative overflow-hidden p-4">
+      {isSigningIn ? (
+        <div
+          className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-[#F6F8FC]/90 backdrop-blur-[2px]"
+          aria-busy="true"
+          aria-live="polite"
+        >
+          <Spinner className="size-10 text-[#2B6CB0] animate-spin" aria-label="Signing you in" />
+          <p className="text-sm font-medium text-[#1A202C]">Signing you in…</p>
+          <p className="text-xs text-[#5A6B7A]">Taking you to your dashboard</p>
+        </div>
+      ) : null}
       {/* Paw Watermark */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.06]">
         <PawPrint className="w-[600px] h-[600px] text-[#1A3A5C]" strokeWidth={0.5} />
@@ -118,7 +149,7 @@ export default function RegisterPage({ onRegister, onNavigate }: RegisterPagePro
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleRegister} className="space-y-4">
           {statusMessage ? (
             <div className="register-input rounded-xl border border-[#D6E3F0] bg-[#F3F7FB] px-3 py-2 text-sm text-[#1A202C]">
               {statusMessage}
@@ -205,10 +236,10 @@ export default function RegisterPage({ onRegister, onNavigate }: RegisterPagePro
 
           <Button
             type="submit"
-            disabled={isLoading}
+            disabled={isLoading || isSigningIn}
             className="register-button w-full h-12 bg-[#2B6CB0] hover:bg-[#1e4e8b] text-white rounded-xl font-medium mt-2"
           >
-            {isLoading ? 'Creating account...' : 'Register'}
+            {isSigningIn ? 'Signing you in…' : isLoading ? 'Creating account…' : 'Register'}
           </Button>
         </form>
 
