@@ -30,6 +30,33 @@ export async function fetchProfileRow(userId: string): Promise<Record<string, un
   return (data as Record<string, unknown> | null) ?? null;
 }
 
+/**
+ * Creates the `public.users` profile row after Auth signup.
+ * `id` must match `auth.users.id` (uuid). Duplicate key (e.g. existing trigger insert) is ignored.
+ */
+export async function insertPublicUserProfileFromAuth(params: {
+  id: string;
+  email: string;
+  name: string;
+}): Promise<PostgrestError | null> {
+  const id = String(params.id).trim();
+  const emailNorm = params.email.trim().toLowerCase();
+  const displayName = params.name.trim() || emailNorm.split('@')[0] || 'User';
+
+  const { error } = await supabase.from('users').insert({
+    id,
+    email: emailNorm,
+    name: displayName,
+    is_admin: 0,
+    is_vet: 0,
+    is_active: 1,
+  });
+
+  if (!error) return null;
+  if (error.code === '23505') return null;
+  return error;
+}
+
 export function toAppUser(supa: SupabaseAuthUser, profile: Record<string, unknown> | null): User {
   const meta = (supa.user_metadata || {}) as Record<string, unknown>;
   const name =
@@ -42,7 +69,7 @@ export function toAppUser(supa: SupabaseAuthUser, profile: Record<string, unknow
   const activeRaw = profile?.is_active;
   const isActive = activeRaw == null ? true : Boolean(activeRaw);
   return {
-    id: supa.id,
+    id: String(supa.id),
     name,
     email: supa.email || '',
     avatar: (profile?.avatar_url as string) || (meta.avatar_url as string) || undefined,

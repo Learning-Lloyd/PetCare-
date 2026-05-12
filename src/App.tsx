@@ -3,7 +3,7 @@ import type { ViewType, User } from '@/types';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import { supabase } from '@/lib/supabaseClient';
-import { fetchProfileRow, toAppUser } from '@/lib/supabaseHelpers';
+import { fetchProfileRow, insertPublicUserProfileFromAuth, toAppUser } from '@/lib/supabaseHelpers';
 import type { AuthError } from '@supabase/supabase-js';
 
 function authErrorMessage(err: AuthError | null): string {
@@ -120,6 +120,18 @@ function App() {
         return;
       }
       if (!data.user) return;
+      if (data.session) {
+        const insertErr = await insertPublicUserProfileFromAuth({
+          id: String(data.user.id),
+          email: String(data.user.email ?? email),
+          name,
+        });
+        if (insertErr) {
+          toast.error('Database error saving new user', { description: insertErr.message });
+          await supabase.auth.signOut();
+          return;
+        }
+      }
       if (!data.session) {
         toast.success('Check your email', {
           description: 'Confirm your address to finish signing up, then sign in.',
