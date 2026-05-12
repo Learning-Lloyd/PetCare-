@@ -1,18 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { ViewType, User } from '@/types';
-import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import { supabase } from '@/lib/supabaseClient';
-import { fetchProfileRow, insertPublicUserProfileFromAuth, toAppUser } from '@/lib/supabaseHelpers';
-import type { AuthError } from '@supabase/supabase-js';
-
-function authErrorMessage(err: AuthError | null): string {
-  return err?.message || 'Authentication failed';
-}
+import { fetchProfileRow, toAppUser } from '@/lib/supabaseHelpers';
+import { useAuth } from '@/providers/AuthProvider';
 
 // Pages
-import LoginPage from '@/pages/LoginPage';
-import RegisterPage from '@/pages/RegisterPage';
 import DashboardPage from '@/pages/DashboardPage';
 import PetsPage from '@/pages/PetsPage';
 import AddPetPage from '@/pages/AddPetPage';
@@ -33,137 +27,37 @@ import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import VetSidebar from '@/components/VetSidebar';
 import VetTopBar from '@/components/VetTopBar';
-import { Spinner } from '@/components/ui/spinner';
-
-type RegisterResult = {
-  ok: boolean;
-  message?: string;
-};
-
-async function loadSessionUser(): Promise<User | null> {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  if (!session?.user) return null;
-  const profile = await fetchProfileRow(session.user.id).catch(() => null);
-  return toAppUser(session.user, profile);
-}
 
 function App() {
-  const [currentView, setCurrentView] = useState<ViewType>('login');
+  const { session } = useAuth();
+  const navigate = useNavigate();
+  const [currentView, setCurrentView] = useState<ViewType>('dashboard');
   const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [vetSearch, setVetSearch] = useState('');
-  /** Avoid clearing user on a null session from onAuthStateChange before getSession() has finished hydrating from storage (refresh race). */
-  const initialSessionResolved = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
-    initialSessionResolved.current = false;
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (cancelled) return;
-      if (!initialSessionResolved.current && !session?.user) {
-        return;
-      }
-      if (!session?.user) {
-        setUser(null);
-        setCurrentView('login');
-        return;
-      }
-      const profile = await fetchProfileRow(session.user.id).catch(() => null);
-      if (cancelled) return;
-      const u = toAppUser(session.user, profile);
-      setUser(u);
-      setCurrentView(u.isVet ? 'vet-dashboard' : 'dashboard');
-    });
-
+    const authUser = session?.user;
+    if (!authUser) {
+      setUser(null);
+      return;
+    }
     (async () => {
-      try {
-        const u = await loadSessionUser();
-        if (cancelled) return;
-        if (u) {
-          setUser(u);
-          setCurrentView(u.isVet ? 'vet-dashboard' : 'dashboard');
-        }
-      } finally {
-        if (!cancelled) {
-          initialSessionResolved.current = true;
-          setIsLoading(false);
-        }
-      }
+      const profile = await fetchProfileRow(authUser.id).catch(() => null);
+      if (cancelled) return;
+      const u = toAppUser(authUser, profile);
+      setUser(u);
+      setCurrentView((prev) => {
+        if (u.isVet) return 'vet-dashboard';
+        if (!u.isVet && String(prev).startsWith('vet-')) return 'dashboard';
+        return prev;
+      });
     })();
-
     return () => {
       cancelled = true;
-      subscription.unsubscribe();
     };
-  }, []);
-
-  const handleLogin = async (email: string, password: string) => {
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) {
-        toast.error('Invalid credentials', { description: authErrorMessage(error) });
-        return;
-      }
-      if (!data.user) return;
-      const profile = await fetchProfileRow(data.user.id).catch(() => null);
-      const u = toAppUser(data.user, profile);
-      if (!u.isActive) {
-        await supabase.auth.signOut();
-        toast.error('Account deactivated', {
-          description: 'This account has been deactivated. Contact an administrator.',
-        });
-        return;
-      }
-      setUser(u);
-      setCurrentView(u.isVet ? 'vet-dashboard' : 'dashboard');
-      toast.success('Welcome back!', { description: `Hello, ${u.name}` });
-    } catch (e) {
-      toast.error('Sign-in failed', { description: String(e) });
-    }
-  };
-
-  const handleRegister = async (name: string, email: string, password: string): Promise<RegisterResult> => {
-    try {
-      const { data, error } = await supabase.functions.invoke('create-admin-user', {
-        body: {
-          email,
-          password,
-          full_name: name,
-        },
-      });
-      if (error) {
-        const message = error.message || 'Registration failed';
-        toast.error('Registration failed', { description: message });
-        return { ok: false, message };
-      }
-      const createdUser = (data as { user?: { id?: string; email?: string } } | null)?.user;
-      if (!createdUser?.id) {
-        toast.error('Registration failed', { description: 'User creation returned no id.' });
-        return { ok: false, message: 'User creation returned no id.' };
-      }
-      // Keep frontend fallback profile insert aligned to public.users (uuid id).
-      const insertErr = await insertPublicUserProfileFromAuth({
-        id: String(createdUser.id),
-        email: String(createdUser.email ?? email),
-        name,
-      });
-      if (insertErr) {
-        toast.error('Database error saving new user', { description: insertErr.message });
-        return { ok: false, message: insertErr.message };
-      }
-      toast.success('User created', { description: `${email} can log in immediately.` });
-      return { ok: true, message: 'User created successfully.' };
-    } catch (e) {
-      toast.error('Registration failed', { description: String(e) });
-      return { ok: false, message: String(e) };
-    }
-  };
+  }, [session?.user?.id]);
 
   const handleLogout = async () => {
     try {
@@ -172,11 +66,20 @@ function App() {
       /* ignore */
     }
     setUser(null);
-    setCurrentView('login');
+    setCurrentView('dashboard');
     toast.info('Logged out successfully');
+    navigate('/login', { replace: true });
   };
 
   const navigateTo = (view: ViewType) => {
+    if (view === 'login') {
+      navigate('/login');
+      return;
+    }
+    if (view === 'register') {
+      navigate('/register');
+      return;
+    }
     setCurrentView(view);
   };
 
@@ -195,12 +98,12 @@ function App() {
     let cancelled = false;
     (async () => {
       const {
-        data: { session },
+        data: { session: s },
       } = await supabase.auth.getSession();
-      if (!session?.user || cancelled) return;
-      const profile = await fetchProfileRow(session.user.id).catch(() => null);
+      if (!s?.user || cancelled) return;
+      const profile = await fetchProfileRow(s.user.id).catch(() => null);
       if (cancelled) return;
-      const fresh = toAppUser(session.user, profile);
+      const fresh = toAppUser(s.user, profile);
       if (!fresh.isVet) {
         setUser(fresh);
         setCurrentView('dashboard');
@@ -235,9 +138,8 @@ function App() {
   const renderPage = () => {
     switch (currentView) {
       case 'login':
-        return <LoginPage onLogin={handleLogin} onNavigate={navigateTo} />;
       case 'register':
-        return <RegisterPage onRegister={handleRegister} onNavigate={navigateTo} />;
+        return <DashboardPage onNavigate={navigateTo} userName={user?.name ?? ''} />;
       case 'dashboard':
         return <DashboardPage onNavigate={navigateTo} userName={user?.name ?? ''} />;
       case 'pets':
@@ -274,20 +176,10 @@ function App() {
     }
   };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-[#F6F8FC] flex items-center justify-center">
-        <Spinner className="size-10 text-teal-600 animate-spin" aria-label="Loading session" />
-        <Toaster position="top-right" richColors />
-      </div>
-    );
-  }
-
   if (!user) {
     return (
-      <div className="min-h-screen bg-[#F6F8FC]">
-        {renderPage()}
-        <Toaster position="top-right" richColors />
+      <div className="min-h-screen bg-[#F6F8FC] flex items-center justify-center">
+        <p className="text-sm text-muted-foreground">Loading your profile…</p>
       </div>
     );
   }
@@ -313,7 +205,6 @@ function App() {
           />
           <main className="flex-1 p-4 md:p-6 overflow-auto">{renderVetPage()}</main>
         </div>
-        <Toaster position="top-right" richColors />
       </div>
     );
   }
@@ -338,8 +229,6 @@ function App() {
 
         <main className="flex-1 p-6 overflow-auto">{renderPage()}</main>
       </div>
-
-      <Toaster position="top-right" richColors />
     </div>
   );
 }
