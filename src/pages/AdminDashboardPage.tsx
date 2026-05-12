@@ -42,8 +42,8 @@ import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
+import { supabase } from '@/lib/supabaseClient';
 import {
-  adminCreateUserUnsupported,
   adminDeleteReminder,
   adminDeleteUser,
   adminPatchReminder,
@@ -233,6 +233,13 @@ interface ActivityLogRow {
 
 type UserRoleChoice = 'owner' | 'admin' | 'vet';
 
+/** Values sent to Edge Function `create-admin-user` for `users` / triggers (`user` | `administrator` | `veterinarian`). */
+function roleChoiceToApiRole(r: UserRoleChoice): 'user' | 'administrator' | 'veterinarian' {
+  if (r === 'admin') return 'administrator';
+  if (r === 'vet') return 'veterinarian';
+  return 'user';
+}
+
 interface AdminDashboardPageProps {
   onNavigate: (view: ViewType) => void;
   currentUserId: string;
@@ -270,6 +277,7 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   const [addPassword, setAddPassword] = useState('');
   const [addRole, setAddRole] = useState<UserRoleChoice>('owner');
   const [addVetLicense, setAddVetLicense] = useState('');
+  const [addUserSubmitting, setAddUserSubmitting] = useState(false);
 
   const [editUser, setEditUser] = useState<AdminUserRow | null>(null);
   const [editName, setEditName] = useState('');
@@ -340,10 +348,56 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
   };
 
   const submitAddUser = async () => {
+    const email = addEmail.trim();
+    const fullName = addName.trim();
+    if (!fullName || !email) {
+      toast.error('Could not create user', { description: 'Name and email are required.' });
+      return;
+    }
+    if (addPassword.length < 8) {
+      toast.error('Could not create user', { description: 'Password must be at least 8 characters.' });
+      return;
+    }
+    const role = roleChoiceToApiRole(addRole);
+    const vetLicenseTrim = addVetLicense.trim();
+    setAddUserSubmitting(true);
     try {
-      adminCreateUserUnsupported();
-    } catch (e) {
-      toast.error('Could not create user', { description: String(e) });
+      const { data, error: fnErr } = await supabase.functions.invoke('create-admin-user', {
+        body: {
+          email,
+          password: addPassword,
+          full_name: fullName,
+          role,
+          ...(vetLicenseTrim ? { vet_license_id: vetLicenseTrim } : {}),
+        },
+      });
+      if (fnErr) {
+        toast.error('Could not create user', { description: fnErr.message });
+        return;
+      }
+      const payload = data as { error?: string; user?: { id?: string }; message?: string } | null;
+      if (payload?.error) {
+        toast.error('Could not create user', { description: payload.error });
+        return;
+      }
+      if (payload?.user?.id == null || String(payload.user.id).trim() === '') {
+        toast.error('Could not create user', { description: 'No user id returned from server.' });
+        return;
+      }
+      toast.success(payload?.message || 'User created successfully.', {
+        description: `${email} can sign in immediately.`,
+      });
+      setAddName('');
+      setAddEmail('');
+      setAddPassword('');
+      setAddRole('owner');
+      setAddVetLicense('');
+      setAddUserOpen(false);
+      loadAll();
+    } catch {
+      toast.error('Could not create user');
+    } finally {
+      setAddUserSubmitting(false);
     }
   };
 
@@ -1388,8 +1442,13 @@ export default function AdminDashboardPage({ onNavigate, currentUserId }: AdminD
             <Button type="button" variant="outline" onClick={() => setAddUserOpen(false)}>
               Cancel
             </Button>
-            <Button type="button" className="bg-[#1A202C]" onClick={submitAddUser}>
-              Create
+            <Button
+              type="button"
+              className="bg-[#1A202C]"
+              onClick={submitAddUser}
+              disabled={addUserSubmitting}
+            >
+              {addUserSubmitting ? 'Creating…' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>

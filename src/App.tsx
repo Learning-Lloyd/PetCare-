@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { ViewType, User } from '@/types';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -33,6 +33,7 @@ import Sidebar from '@/components/Sidebar';
 import TopBar from '@/components/TopBar';
 import VetSidebar from '@/components/VetSidebar';
 import VetTopBar from '@/components/VetTopBar';
+import { Spinner } from '@/components/ui/spinner';
 
 type RegisterResult = {
   ok: boolean;
@@ -51,39 +52,55 @@ async function loadSessionUser(): Promise<User | null> {
 function App() {
   const [currentView, setCurrentView] = useState<ViewType>('login');
   const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [vetSearch, setVetSearch] = useState('');
+  /** Avoid clearing user on a null session from onAuthStateChange before getSession() has finished hydrating from storage (refresh race). */
+  const initialSessionResolved = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      const u = await loadSessionUser();
-      if (cancelled) return;
-      if (u) {
-        setUser(u);
-        setCurrentView(u.isVet ? 'vet-dashboard' : 'dashboard');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    initialSessionResolved.current = false;
 
-  useEffect(() => {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (cancelled) return;
+      if (!initialSessionResolved.current && !session?.user) {
+        return;
+      }
       if (!session?.user) {
         setUser(null);
         setCurrentView('login');
         return;
       }
       const profile = await fetchProfileRow(session.user.id).catch(() => null);
+      if (cancelled) return;
       const u = toAppUser(session.user, profile);
       setUser(u);
       setCurrentView(u.isVet ? 'vet-dashboard' : 'dashboard');
     });
-    return () => subscription.unsubscribe();
+
+    (async () => {
+      try {
+        const u = await loadSessionUser();
+        if (cancelled) return;
+        if (u) {
+          setUser(u);
+          setCurrentView(u.isVet ? 'vet-dashboard' : 'dashboard');
+        }
+      } finally {
+        if (!cancelled) {
+          initialSessionResolved.current = true;
+          setIsLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const handleLogin = async (email: string, password: string) => {
@@ -256,6 +273,15 @@ function App() {
         return <DashboardPage onNavigate={navigateTo} userName={user?.name ?? ''} />;
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#F6F8FC] flex items-center justify-center">
+        <Spinner className="size-10 text-teal-600 animate-spin" aria-label="Loading session" />
+        <Toaster position="top-right" richColors />
+      </div>
+    );
+  }
 
   if (!user) {
     return (

@@ -4,7 +4,25 @@ type CreateUserPayload = {
   email?: string;
   password?: string;
   full_name?: string;
+  /** From admin UI: `user` | `administrator` | `veterinarian` */
+  role?: string;
+  vet_license_id?: string;
 };
+
+function roleToProfileFlags(roleRaw: string | undefined): {
+  is_admin: number;
+  is_vet: number;
+  roleLabel: string;
+} {
+  const r = String(roleRaw || "user").trim().toLowerCase();
+  if (r === "administrator" || r === "admin") {
+    return { is_admin: 1, is_vet: 0, roleLabel: "administrator" };
+  }
+  if (r === "veterinarian" || r === "vet") {
+    return { is_admin: 0, is_vet: 1, roleLabel: "veterinarian" };
+  }
+  return { is_admin: 0, is_vet: 0, roleLabel: "user" };
+}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -18,10 +36,15 @@ Deno.serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const serviceRoleKey =
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ||
+      Deno.env.get("ADMIN_SERVICE_KEY");
     if (!supabaseUrl || !serviceRoleKey) {
       return new Response(
-        JSON.stringify({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY." }),
+        JSON.stringify({
+          error:
+            "Missing SUPABASE_URL or service role secret (SUPABASE_SERVICE_ROLE_KEY or ADMIN_SERVICE_KEY).",
+        }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
@@ -66,6 +89,11 @@ Deno.serve(async (req) => {
     const email = String(payload.email || "").trim().toLowerCase();
     const password = String(payload.password || "");
     const fullName = String(payload.full_name || "").trim();
+    const flags = roleToProfileFlags(payload.role);
+    const vetLicense =
+      payload.vet_license_id != null && String(payload.vet_license_id).trim() !== ""
+        ? String(payload.vet_license_id).trim()
+        : null;
     if (!email || !password || !fullName) {
       return new Response(
         JSON.stringify({ error: "email, password, and full_name are required." }),
@@ -77,7 +105,10 @@ Deno.serve(async (req) => {
       email,
       password,
       email_confirm: true,
-      user_metadata: { full_name: fullName },
+      user_metadata: {
+        full_name: fullName,
+        role: flags.roleLabel,
+      },
     });
     if (createErr || !createdAuth.user?.id) {
       return new Response(
@@ -92,9 +123,10 @@ Deno.serve(async (req) => {
         id: newUserId,
         email,
         name: fullName,
-        is_admin: 0,
-        is_vet: 0,
+        is_admin: flags.is_admin,
+        is_vet: flags.is_vet,
         is_active: 1,
+        vet_license_id: vetLicense,
       },
       { onConflict: "id" },
     );
@@ -107,7 +139,7 @@ Deno.serve(async (req) => {
 
     return new Response(
       JSON.stringify({
-        user: { id: newUserId, email, full_name: fullName },
+        user: { id: newUserId, email, full_name: fullName, role: flags.roleLabel },
         message: "User created successfully.",
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
