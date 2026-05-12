@@ -1,6 +1,6 @@
 import type { User } from '@/types';
 import { supabase } from '@/lib/supabaseClient';
-import { fetchProfileRow, insertPublicUserProfileFromAuth, toAppUser } from '@/lib/supabaseHelpers';
+import { fetchProfileRow, toAppUser } from '@/lib/supabaseHelpers';
 import type { AuthError } from '@supabase/supabase-js';
 
 function authErrorMessage(err: AuthError | null): string {
@@ -59,14 +59,6 @@ export async function attemptAdminRegistration(
     const createdUser = (data as { user?: { id?: string; email?: string } } | null)?.user;
     if (!createdUser?.id) {
       return { ok: false, message: 'User creation returned no id.' };
-    }
-    const insertErr = await insertPublicUserProfileFromAuth({
-      id: String(createdUser.id),
-      email: String(createdUser.email ?? email),
-      name,
-    });
-    if (insertErr) {
-      return { ok: false, message: insertErr.message };
     }
     return { ok: true, message: 'User created successfully.' };
   } catch (e) {

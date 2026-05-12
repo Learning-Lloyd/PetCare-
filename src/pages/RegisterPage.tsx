@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import type { ViewType } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,7 +15,6 @@ interface RegisterPageProps {
 }
 
 export default function RegisterPage({ onNavigate }: RegisterPageProps) {
-  const navigate = useNavigate();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -88,7 +86,7 @@ export default function RegisterPage({ onNavigate }: RegisterPageProps) {
     }
 
     await new Promise((r) => setTimeout(r, 450));
-    navigate('/dashboard', { replace: true });
+    window.location.href = '/dashboard';
   };
 
   return (
